@@ -1,6 +1,12 @@
 import express from "express";
+import cors from "cors";
 
 const app = express();
+
+app.use(cors({
+  origin: "https://monalhomecomfort-blip.github.io"
+}));
+
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -12,11 +18,6 @@ app.post("/mono-webhook", (req, res) => {
   res.sendStatus(200);
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Server started on port", PORT);
-});
-
 app.post("/create-payment", async (req, res) => {
   const { amount, orderId } = req.body;
 
@@ -24,9 +25,13 @@ app.post("/create-payment", async (req, res) => {
     return res.status(400).json({ error: "amount або orderId відсутні" });
   }
 
-  // ТУТ ПОКИ ФЕЙК (щоб перевірити ланцюжок)
-  // Замість mono ми повертаємо заглушку
+  // ПОКИ ЗАГЛУШКА (пізніше замінимо на реальний mono)
   res.json({
-    checkoutUrl: `https://example.com/pay?order=${orderId}&sum=${amount}`
+    paymentUrl: `https://example.com/pay?order=${orderId}&sum=${amount}`
   });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Server started on port", PORT);
 });
