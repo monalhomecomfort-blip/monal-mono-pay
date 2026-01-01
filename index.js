@@ -64,7 +64,7 @@ app.post("/create-payment", async (req, res) => {
             reference: orderId,
             destination: `Замовлення №${orderId}`
           },
-          redirectUrl: "https://monalhomecomfort-blip.github.io/monal-glass-v2/index.html"
+          redirectUrl: "https://monalhomecomfort-blip.github.io/monal-glass-v2/index.html",
           webhookUrl: "https://monal-mono-pay-production.up.railway.app/mono-webhook"
         })
       }
