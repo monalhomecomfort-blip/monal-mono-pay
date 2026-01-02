@@ -101,6 +101,8 @@ app.post("/mono-webhook", async (req, res) => {
       data.reference ||
       data.merchantPaymInfo?.reference;
 
+    
+    
     if (!orderId) {
       console.log("No order reference in webhook");
       return res.sendStatus(200);
@@ -127,7 +129,7 @@ app.post("/mono-webhook", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text,
+        text: `${text}\n\n🔗 Reference оплати: ${orderId}`,
         parse_mode: "Markdown"
       })
     });
