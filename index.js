@@ -127,25 +127,7 @@ if (!text) {
   return res.sendStatus(200);
 }
 
-/* ===== СЕРТИФІКАТ ===== */
-if (text.includes("Сертифікат")) {
-  const certCode = `MONAL-${orderId}`;
 
-  const createdAt = new Date();
-  const expiresAt = new Date(createdAt);
-  expiresAt.setFullYear(createdAt.getFullYear() + 1);
-
-  const formatDate = d =>
-    d.toLocaleDateString("uk-UA");
-
-  text += `
-
-🎁 *Подарунковий сертифікат*
-🔐 Код: \`${certCode}\`
-📅 Дійсний до: ${formatDate(expiresAt)}
-⚠️ Одноразове використання
-`;
-}
 
 
     const botToken = process.env.BOT_TOKEN;
