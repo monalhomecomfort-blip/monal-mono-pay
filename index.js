@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import fetch from "node-fetch";
 
 const app = express();
 
@@ -11,7 +12,8 @@ app.use(cors({
 
 app.use(express.json());
 
-// тимчасове сховище замовлень до моменту успішної оплати
+// тимчасове сховище замовлень ДО оплати
+// orderId → { text, certificate }
 const ORDERS = new Map();
 
 /* ===================== HEALTH CHECK ===================== */
@@ -21,15 +23,29 @@ app.get("/", (req, res) => {
 });
 
 /* ===================== REGISTER ORDER ===================== */
-/* сайт зберігає текст замовлення ДО оплати */
+/*
+  СЮДИ сайт шле:
+  {
+    orderId,
+    text,
+    certificate: {
+      code,
+      nominal
+    } | null
+  }
+*/
 app.post("/register-order", (req, res) => {
-  const { orderId, text } = req.body;
+  const { orderId, text, certificate } = req.body;
 
   if (!orderId || !text) {
     return res.status(400).json({ error: "orderId або text відсутні" });
   }
 
-  ORDERS.set(orderId, text);
+  ORDERS.set(orderId, {
+    text,
+    certificate: certificate || null
+  });
+
   res.json({ ok: true });
 });
 
@@ -57,13 +73,13 @@ app.post("/create-payment", async (req, res) => {
           "X-Token": monoToken
         },
         body: JSON.stringify({
-          amount: Math.round(amount * 100), // mono працює в копійках
+          amount: Math.round(amount * 100),
           ccy: 980,
           merchantPaymInfo: {
             reference: orderId,
             destination: `Замовлення №${orderId}`
           },
-          redirectUrl: "https://monalhomecomfort-blip.github.io/monal-glass-v2/payment-success.html",
+          redirectUrl: "https://monalhomecomfort-blip.github.io/monal-glass-v2/index.html",
           webhookUrl: "https://monal-mono-pay-production.up.railway.app/mono-webhook"
         })
       }
@@ -76,9 +92,7 @@ app.post("/create-payment", async (req, res) => {
       return res.status(500).json({ error: "Mono не повернув pageUrl" });
     }
 
-    res.json({
-      paymentUrl: data.pageUrl
-    });
+    res.json({ paymentUrl: data.pageUrl });
 
   } catch (err) {
     console.error("Create payment error:", err);
@@ -92,7 +106,7 @@ app.post("/mono-webhook", async (req, res) => {
   try {
     const data = req.body;
 
-    // mono шле кілька статусів — реагуємо ТІЛЬКИ на success
+    // реагуємо ТІЛЬКИ на success
     if (data.status !== "success") {
       return res.sendStatus(200);
     }
@@ -101,16 +115,14 @@ app.post("/mono-webhook", async (req, res) => {
       data.reference ||
       data.merchantPaymInfo?.reference;
 
-    
-    
     if (!orderId) {
       console.log("No order reference in webhook");
       return res.sendStatus(200);
     }
 
-    const text = ORDERS.get(orderId);
+    const order = ORDERS.get(orderId);
 
-    if (!text) {
+    if (!order) {
       console.log("Order not found:", orderId);
       return res.sendStatus(200);
     }
@@ -123,18 +135,34 @@ app.post("/mono-webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // надсилаємо замовлення адміну
+    let finalText = order.text;
+
+    /* ===== СЕРТИФІКАТ ===== */
+    if (order.certificate) {
+      const certCode = `MONAL-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+
+      finalText += `
+      
+🎁 *Сертифікат використано*
+Код: ${certCode}
+Номінал: ${order.certificate.nominal} грн
+Статус: використаний
+`;
+
+      // ❗ тут далі можна писати в базу / sheet
+    }
+
+    // надсилаємо адміну
     await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: `${text}\n\n🔗 Reference оплати: ${orderId}`,
+        text: finalText,
         parse_mode: "Markdown"
       })
     });
 
-    // чистимо памʼять
     ORDERS.delete(orderId);
 
     res.sendStatus(200);
