@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
 
 const app = express();
 
@@ -58,7 +57,7 @@ app.post("/create-payment", async (req, res) => {
           "X-Token": monoToken
         },
         body: JSON.stringify({
-          amount: Math.round(amount * 100), // копійки
+          amount: Math.round(amount * 100), // mono працює в копійках
           ccy: 980,
           merchantPaymInfo: {
             reference: orderId,
@@ -93,12 +92,20 @@ app.post("/mono-webhook", async (req, res) => {
   try {
     const data = req.body;
 
-    // mono може шльопати кілька статусів — реагуємо ТІЛЬКИ на success
+    // mono шле кілька статусів — реагуємо ТІЛЬКИ на success
     if (data.status !== "success") {
       return res.sendStatus(200);
     }
 
-    const orderId = data.reference;
+    const orderId =
+      data.reference ||
+      data.merchantPaymInfo?.reference;
+
+    if (!orderId) {
+      console.log("No order reference in webhook");
+      return res.sendStatus(200);
+    }
+
     const text = ORDERS.get(orderId);
 
     if (!text) {
