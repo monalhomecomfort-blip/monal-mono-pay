@@ -8,7 +8,9 @@ const app = express();
 
 /* ===================== GOOGLE SHEETS ===================== */
 
-const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+const credentials = JSON.parse(
+  process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+);
 
 const auth = new google.auth.GoogleAuth({
   credentials,
