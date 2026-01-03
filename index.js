@@ -12,7 +12,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// тимчасове сховище замовлень ДО оплати
+// Тимчасове сховище замовлень ДО оплати
 // orderId → { text, certificate }
 const ORDERS = new Map();
 
@@ -24,14 +24,11 @@ app.get("/", (req, res) => {
 
 /* ===================== REGISTER ORDER ===================== */
 /*
-  СЮДИ сайт шле:
+  Сайт шле:
   {
     orderId,
     text,
-    certificate: {
-      code,
-      nominal
-    } | null
+    certificate: { nominal } | null
   }
 */
 app.post("/register-order", (req, res) => {
@@ -106,7 +103,7 @@ app.post("/mono-webhook", async (req, res) => {
   try {
     const data = req.body;
 
-    // реагуємо ТІЛЬКИ на success
+    // Реагуємо ТІЛЬКИ на успішну оплату
     if (data.status !== "success") {
       return res.sendStatus(200);
     }
@@ -120,15 +117,38 @@ app.post("/mono-webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-let text = ORDERS.get(orderId);
+    const order = ORDERS.get(orderId);
 
-if (!text) {
-  console.log("Order not found:", orderId);
-  return res.sendStatus(200);
-}
+    if (!order) {
+      console.log("Order not found:", orderId);
+      return res.sendStatus(200);
+    }
 
+    let finalText = order.text;
 
+    /* ===== GENERATE CERTIFICATE IF EXISTS ===== */
+    if (order.certificate) {
+      const certCode =
+        "MONAL-" +
+        Math.random().toString(36).substring(2, 6).toUpperCase() +
+        "-" +
+        orderId;
 
+      const createdAt = new Date();
+      const expiresAt = new Date(createdAt);
+      expiresAt.setFullYear(createdAt.getFullYear() + 1);
+
+      const formatDate = d => d.toLocaleDateString("uk-UA");
+
+      finalText += `
+
+🎁 *ПОДАРУНКОВИЙ СЕРТИФІКАТ*
+🔐 Код: \`${certCode}\`
+💰 Номінал: ${order.certificate.nominal} грн
+📅 Дійсний до: ${formatDate(expiresAt)}
+⚠️ Одноразове використання
+`;
+    }
 
     const botToken = process.env.BOT_TOKEN;
     const chatId = process.env.CHAT_ID;
@@ -138,24 +158,7 @@ if (!text) {
       return res.sendStatus(200);
     }
 
-    let finalText = order.text;
-
-    /* ===== СЕРТИФІКАТ ===== */
-    if (order.certificate) {
-      const certCode = `MONAL-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-
-      finalText += `
-      
-🎁 *Сертифікат використано*
-Код: ${certCode}
-Номінал: ${order.certificate.nominal} грн
-Статус: використаний
-`;
-
-      // ❗ тут далі можна писати в базу / sheet
-    }
-
-    // надсилаємо адміну
+    // Надсилаємо адміну
     await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -166,6 +169,7 @@ if (!text) {
       })
     });
 
+    // Чистимо замовлення
     ORDERS.delete(orderId);
 
     res.sendStatus(200);
