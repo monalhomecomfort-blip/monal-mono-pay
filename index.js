@@ -38,6 +38,37 @@ app.post("/register-order", (req, res) => {
   res.json({ ok: true });
 });
 
+/* ===================== СЕРТИФІКАТИ ===================== */
+
+app.post("/send-free-order", async (req, res) => {
+  const { orderId } = req.body;
+
+  if (!orderId) {
+    return res.status(400).json({ error: "orderId відсутній" });
+  }
+
+  const order = ORDERS.get(orderId);
+  if (!order) {
+    return res.status(404).json({ error: "order не знайдено" });
+  }
+
+  const botToken = process.env.BOT_TOKEN;
+  const chatId = process.env.CHAT_ID;
+
+  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: order.text + `\n\n✅ *Оплачено сертифікатом (0 грн)*`,
+      parse_mode: "Markdown"
+    })
+  });
+
+  ORDERS.delete(orderId);
+  res.json({ ok: true });
+});
+
 /* ===================== CREATE PAYMENT ===================== */
 
 app.post("/create-payment", async (req, res) => {
