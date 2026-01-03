@@ -168,34 +168,27 @@ app.post("/mono-webhook", async (req, res) => {
 
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
 app.post("/send-free-order", async (req, res) => {
-  const { orderId } = req.body;
+  const { orderId, text } = req.body;
+  if (!orderId || !text) return res.sendStatus(400);
 
-  const order = ORDERS.get(orderId);
-  if (!order) return res.sendStatus(200);
-
-  let finalText = order.text;
-
-  finalText += `
+  let finalText = text + `
 
 💳 *Оплата:* Сертифікат (100%)
 `;
 
-  const botToken = process.env.BOT_TOKEN;
-  const chatId  = process.env.CHAT_ID;
-
-  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+  await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      chat_id: chatId,
+      chat_id: process.env.CHAT_ID,
       text: finalText,
       parse_mode: "Markdown"
     })
   });
 
-  ORDERS.delete(orderId);
   res.json({ ok: true });
 });
+
 
 /* ===================== START ===================== */
 
