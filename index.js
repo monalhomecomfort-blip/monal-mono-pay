@@ -1,8 +1,24 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
+import { google } from "googleapis";
+
 
 const app = express();
+
+/* ===================== GOOGLE SHEETS ===================== */
+
+const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+
+const auth = new google.auth.GoogleAuth({
+  credentials,
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+
+const sheets = google.sheets({ version: "v4", auth });
+
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const SHEET_NAME = process.env.GOOGLE_SHEET_NAME;
 
 /* ===================== CONFIG ===================== */
 
