@@ -125,6 +125,11 @@ app.post("/mono-webhook", async (req, res) => {
     }
 
     let finalText = order.text;
+    finalText += `
+
+🔗 *Референс оплати (mono):*
+\`${orderId}\`
+`;
 
     /* ===== GENERATE CERTIFICATE IF EXISTS ===== */
     if (order.certificate) {
