@@ -41,7 +41,7 @@ app.get("/", (req, res) => {
 /* ===================== REGISTER ORDER ===================== */
 
 app.post("/register-order", (req, res) => {
-  const { orderId, text, certificate } = req.body;
+  const { orderId, text, certificates } = req.body;
 
   if (!orderId || !text) {
     return res.status(400).json({ error: "orderId або text відсутні" });
@@ -49,7 +49,7 @@ app.post("/register-order", (req, res) => {
 
   ORDERS.set(orderId, {
     text,
-    certificate: certificate || null
+    certificates: Array.isArray(certificates) ? certificates : null
   });
 
   res.json({ ok: true });
@@ -110,27 +110,24 @@ app.post("/mono-webhook", async (req, res) => {
 🔗 *Референс mono:* \`${orderId}\`
 `;
 
-  /* ===== CERTIFICATE ===== */
-  if (order.certificate) {
+if (order.certificates && order.certificates.length) {
+  const createdAt = new Date();
+
+  for (const cert of order.certificates) {
     const certCode =
       "MONAL-" +
       Math.random().toString(36).substring(2, 6).toUpperCase() +
       "-" +
       orderId;
 
-    const createdAt = new Date();
     const expiresAt = new Date(createdAt);
     expiresAt.setFullYear(createdAt.getFullYear() + 1);
 
-    const format = d => d.toLocaleDateString("uk-UA");
-
     finalText += `
-
 🎁 *ПОДАРУНКОВИЙ СЕРТИФІКАТ*
 🔐 Код: \`${certCode}\`
-💰 Номінал: ${order.certificate.nominal} грн
-📅 Дійсний до: ${format(expiresAt)}
-⚠️ Одноразове використання
+💰 Номінал: ${cert.nominal} грн
+📅 Дійсний до: ${expiresAt.toLocaleDateString("uk-UA")}
 `;
 
     // === GOOGLE SHEETS RECORD ===
@@ -140,18 +137,20 @@ app.post("/mono-webhook", async (req, res) => {
       valueInputOption: "USER_ENTERED",
       requestBody: {
         values: [[
-          certCode,
-          order.certificate.nominal,
+          certCode,                // Код сертифіката
+          cert.nominal,            // Номінал
           createdAt.toISOString(),
           expiresAt.toISOString(),
-          "",
-          orderId,
-          "active",
-          order.certificate.type || ""
+          "",                      // Дата використання
+          orderId,                 // Один референс
+          "active",                // Статус
+          order.certificateType || "електронний"
         ]]
       }
     });
-  } // ✅ ОСЬ ТУТ закривається if(order.certificate)
+  }
+}
+
 
   /* ===== TELEGRAM ===== */
   const botToken = process.env.BOT_TOKEN;
