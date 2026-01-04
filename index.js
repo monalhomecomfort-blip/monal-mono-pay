@@ -87,6 +87,47 @@ app.post("/create-payment", async (req, res) => {
   res.json({ paymentUrl: data.pageUrl });
 });
 
+/* ===================== CHECK CERTIFICATE ===================== */
+app.post("/check-certificate", async (req, res) => {
+  const { code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ error: "code missing" });
+  }
+
+  try {
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${SHEET_NAME}!A:H`
+    });
+
+    const rows = result.data.values || [];
+
+    // шукаємо сертифікат по коду
+    const row = rows.find(r => r[0] === code);
+
+    if (!row) {
+      return res.json({ valid: false });
+    }
+
+    const status = row[6];        // Статус
+    const nominal = Number(row[1]); // Номінал
+
+    if (status !== "active") {
+      return res.json({ valid: false });
+    }
+
+    res.json({
+      valid: true,
+      nominal
+    });
+
+  } catch (err) {
+    console.error("check-certificate error", err);
+    res.status(500).json({ error: "server error" });
+  }
+});
+
 /* ===================== MONO WEBHOOK ===================== */
 
 app.post("/mono-webhook", async (req, res) => {
