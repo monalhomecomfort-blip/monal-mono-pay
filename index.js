@@ -3,7 +3,6 @@ import cors from "cors";
 import fetch from "node-fetch";
 import { google } from "googleapis";
 
-
 const app = express();
 
 /* ===================== GOOGLE SHEETS ===================== */
@@ -20,7 +19,7 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: "v4", auth });
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_NAME = process.env.GOOGLE_SHEET_NAME;
+const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "certificates";
 
 /* ===================== CONFIG ===================== */
 
@@ -32,20 +31,6 @@ app.use(express.json());
 
 // orderId → { text, certificate }
 const ORDERS = new Map();
-
-// ===================== GOOGLE SHEETS =====================
-
-const sheets = new google.sheets({
-  version: "v4",
-  auth: new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"]
-  })
-});
-
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_NAME = "certificates";
-
 
 /* ===================== HEALTH ===================== */
 
@@ -67,37 +52,6 @@ app.post("/register-order", (req, res) => {
     certificate: certificate || null
   });
 
-  res.json({ ok: true });
-});
-
-/* ===================== СЕРТИФІКАТИ ===================== */
-
-app.post("/send-free-order", async (req, res) => {
-  const { orderId } = req.body;
-
-  if (!orderId) {
-    return res.status(400).json({ error: "orderId відсутній" });
-  }
-
-  const order = ORDERS.get(orderId);
-  if (!order) {
-    return res.status(404).json({ error: "order не знайдено" });
-  }
-
-  const botToken = process.env.BOT_TOKEN;
-  const chatId = process.env.CHAT_ID;
-
-  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: order.text + `\n\n✅ *Оплачено сертифікатом (0 грн)*`,
-      parse_mode: "Markdown"
-    })
-  });
-
-  ORDERS.delete(orderId);
   res.json({ ok: true });
 });
 
@@ -151,13 +105,12 @@ app.post("/mono-webhook", async (req, res) => {
 
   let finalText = order.text;
 
-  // 🔗 mono reference
   finalText += `
 
 🔗 *Референс mono:* \`${orderId}\`
 `;
 
-  // 🎁 CERTIFICATE
+  /* ===== CERTIFICATE ===== */
   if (order.certificate) {
     const certCode =
       "MONAL-" +
@@ -180,7 +133,7 @@ app.post("/mono-webhook", async (req, res) => {
 ⚠️ Одноразове використання
 `;
 
-     // === ЗАПИС У GOOGLE SHEETS ===
+    // === GOOGLE SHEETS RECORD ===
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: `${SHEET_NAME}!A:G`,
@@ -191,14 +144,15 @@ app.post("/mono-webhook", async (req, res) => {
           order.certificate.nominal,
           createdAt.toISOString(),
           expiresAt.toISOString(),
-          "",               // used_at
+          "",
           orderId,
           "active"
         ]]
       }
-    });   
+    });
   }
-  
+
+  /* ===== TELEGRAM ===== */
   const botToken = process.env.BOT_TOKEN;
   const chatId = process.env.CHAT_ID;
 
@@ -217,28 +171,26 @@ app.post("/mono-webhook", async (req, res) => {
 });
 
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
+
 app.post("/send-free-order", async (req, res) => {
   const { orderId, text } = req.body;
   if (!orderId || !text) return res.sendStatus(400);
-
-  let finalText = text + `
-
-💳 *Оплата:* Сертифікат (100%)
-`;
 
   await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: process.env.CHAT_ID,
-      text: finalText,
+      text: text + `
+
+💳 *Оплата:* Сертифікат (100%)
+`,
       parse_mode: "Markdown"
     })
   });
 
   res.json({ ok: true });
 });
-
 
 /* ===================== START ===================== */
 
