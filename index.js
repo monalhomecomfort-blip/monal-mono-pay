@@ -136,21 +136,22 @@ app.post("/mono-webhook", async (req, res) => {
     // === GOOGLE SHEETS RECORD ===
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: `${SHEET_NAME}!A:G`,
+      range: `${SHEET_NAME}!A:H`,
       valueInputOption: "USER_ENTERED",
       requestBody: {
         values: [[
-          certCode,
-          order.certificate.nominal,
-          createdAt.toISOString(),
-          expiresAt.toISOString(),
-          "",
-          orderId,
-          "active"
+          certCode,                       // A — Код сертифіката
+          order.certificate.nominal,      // B — Номінал
+          createdAt.toISOString(),        // C — Дата створення
+          expiresAt.toISOString(),        // D — Дійсний до
+          "",                              // E — Дата використання
+          orderId,                        // F — Order ID покупки
+          "active",                       // G — Статус
+          order.certificate.type || ""    // H — Тип сертифікату (БУЛА "Примітка")
         ]]
       }
     });
-  }
+
 
   /* ===== TELEGRAM ===== */
   const botToken = process.env.BOT_TOKEN;
