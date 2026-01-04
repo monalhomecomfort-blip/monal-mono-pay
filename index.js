@@ -140,18 +140,18 @@ app.post("/mono-webhook", async (req, res) => {
       valueInputOption: "USER_ENTERED",
       requestBody: {
         values: [[
-          certCode,                       // A — Код сертифіката
-          order.certificate.nominal,      // B — Номінал
-          createdAt.toISOString(),        // C — Дата створення
-          expiresAt.toISOString(),        // D — Дійсний до
-          "",                              // E — Дата використання
-          orderId,                        // F — Order ID покупки
-          "active",                       // G — Статус
-          order.certificate.type || ""    // H — Тип сертифікату (БУЛА "Примітка")
+          certCode,
+          order.certificate.nominal,
+          createdAt.toISOString(),
+          expiresAt.toISOString(),
+          "",
+          orderId,
+          "active",
+          order.certificate.type || ""
         ]]
       }
     });
-}
+  } // ✅ ОСЬ ТУТ закривається if(order.certificate)
 
   /* ===== TELEGRAM ===== */
   const botToken = process.env.BOT_TOKEN;
