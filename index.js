@@ -151,7 +151,7 @@ app.post("/mono-webhook", async (req, res) => {
         ]]
       }
     });
-
+}
 
   /* ===== TELEGRAM ===== */
   const botToken = process.env.BOT_TOKEN;
