@@ -21,6 +21,41 @@ const sheets = google.sheets({ version: "v4", auth });
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "certificates";
 
+/* ===================== ПОГАШЕННЯ СЕРТИФІКАТУ ===================== */
+async function markCertificateAsUsed(certCode) {
+  // 1. Отримуємо всі сертифікати
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${SHEET_NAME}!A:H`
+  });
+
+  const rows = res.data.values || [];
+  if (rows.length === 0) return;
+
+  // 2. Шукаємо рядок по коду сертифіката
+  const rowIndex = rows.findIndex(
+    (row, idx) => idx > 0 && row[0] === certCode
+  );
+
+  if (rowIndex === -1) return;
+
+  const now = new Date().toISOString();
+
+  // 3. Оновлюємо: Дата використання (E), Статус (G)
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `${SHEET_NAME}!E${rowIndex + 1}:G${rowIndex + 1}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        now,        // E — Дата використання
+        rows[rowIndex][5], // F — Order ID (залишаємо)
+        "used"      // G — Статус
+      ]]
+    }
+  });
+}
+
 /* ===================== CONFIG ===================== */
 
 app.use(cors({
@@ -189,6 +224,8 @@ if (order.certificates && order.certificates.length) {
         ]]
       }
     });
+
+    await markCertificateAsUsed(certCode);
   }
 }
 
@@ -229,6 +266,10 @@ app.post("/send-free-order", async (req, res) => {
       parse_mode: "Markdown"
     })
   });
+
+  if (order.certificateCode) {
+  await markCertificateAsUsed(order.certificateCode);
+}
 
   res.json({ ok: true });
 });
