@@ -33,6 +33,20 @@ app.use(express.json());
 // orderId → { text, certificate }
 const ORDERS = new Map();
 
+// ===================== GOOGLE SHEETS =====================
+
+const sheets = new google.sheets({
+  version: "v4",
+  auth: new google.auth.GoogleAuth({
+    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+  })
+});
+
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const SHEET_NAME = "certificates";
+
+
 /* ===================== HEALTH ===================== */
 
 app.get("/", (req, res) => {
@@ -165,8 +179,26 @@ app.post("/mono-webhook", async (req, res) => {
 📅 Дійсний до: ${format(expiresAt)}
 ⚠️ Одноразове використання
 `;
-  }
 
+     // === ЗАПИС У GOOGLE SHEETS ===
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${SHEET_NAME}!A:G`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[
+          certCode,
+          order.certificate.nominal,
+          createdAt.toISOString(),
+          expiresAt.toISOString(),
+          "",               // used_at
+          orderId,
+          "active"
+        ]]
+      }
+    });   
+  }
+  
   const botToken = process.env.BOT_TOKEN;
   const chatId = process.env.CHAT_ID;
 
