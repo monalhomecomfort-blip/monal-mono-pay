@@ -77,7 +77,7 @@ app.get("/", (req, res) => {
 /* ===================== REGISTER ORDER ===================== */
 
 app.post("/register-order", (req, res) => {
-  const { orderId, text, certificates } = req.body;
+  const { orderId, text, certificates, usedCertificates } = req.body;
 
   if (!orderId || !text) {
     return res.status(400).json({ error: "orderId або text відсутні" });
@@ -85,11 +85,13 @@ app.post("/register-order", (req, res) => {
 
   ORDERS.set(orderId, {
     text,
-    certificates: Array.isArray(certificates) ? certificates : []
+    certificates: Array.isArray(certificates) ? certificates : null,
+    usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : []
   });
 
   res.json({ ok: true });
 });
+
 
 /* ===================== CREATE PAYMENT ===================== */
 
@@ -222,24 +224,38 @@ app.post("/mono-webhook", async (req, res) => {
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
 
 app.post("/send-free-order", async (req, res) => {
-  const { orderId, text } = req.body;
-  if (!orderId || !text) return res.sendStatus(400);
+  const { orderId } = req.body;
+  if (!orderId) return res.sendStatus(400);
+
+  const order = ORDERS.get(orderId);
+  if (!order) return res.sendStatus(404);
+
+  // ✅ позначаємо використаний сертифікат (якщо був)
+  if (order.usedCertificates && order.usedCertificates.length) {
+    for (const code of order.usedCertificates) {
+      await markCertificateAsUsed(code);
+    }
+  }
+
+  const finalText = order.text + `
+
+💳 *Оплата:* Сертифікат (100%)
+`;
 
   await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: process.env.CHAT_ID,
-      text: text + `
-
-💳 *Оплата:* Сертифікат (100%)
-`,
+      text: finalText,
       parse_mode: "Markdown"
     })
   });
 
+  ORDERS.delete(orderId);
   res.json({ ok: true });
 });
+
 
 /* ===================== START ===================== */
 
