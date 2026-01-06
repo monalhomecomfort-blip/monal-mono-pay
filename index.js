@@ -120,7 +120,7 @@ app.post("/create-payment", async (req, res) => {
   );
 
   const data = await response.json();
-  res.json({ paymentUrl: data.pageUrl });
+  res.json({ pageUrl: data.pageUrl });
 });
 
 /* ===================== CHECK CERTIFICATE ===================== */
