@@ -60,7 +60,7 @@ async function markCertificateAsUsed(certCode) {
 /* ===================== CONFIG ===================== */
 
 app.use(cors({
-  origin: "https://monalhomecomfort-blip.github.io"
+  origin: "https://monal.com.ua"
 }));
 
 app.use(express.json());
