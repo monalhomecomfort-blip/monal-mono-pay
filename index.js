@@ -98,6 +98,15 @@ app.post("/register-order", (req, res) => {
 app.post("/create-payment", async (req, res) => {
   const { amount, orderId } = req.body;
 
+  // ✅ ОБОВʼЯЗКОВІ ПЕРЕВІРКИ
+  if (!amount || isNaN(amount)) {
+    return res.status(400).json({ error: "Invalid amount" });
+  }
+
+  if (!orderId) {
+    return res.status(400).json({ error: "Missing orderId" });
+  }
+
   const response = await fetch(
     "https://api.monobank.ua/api/merchant/invoice/create",
     {
@@ -119,16 +128,16 @@ app.post("/create-payment", async (req, res) => {
     }
   );
 
-const data = await response.json();
+  const data = await response.json();
 
-if (!response.ok || !data.pageUrl) {
-  console.error("MONO ERROR:", data);
-  return res.status(400).json(data);
-}
+  if (!response.ok || !data.pageUrl) {
+    console.error("MONO ERROR:", data);
+    return res.status(400).json(data);
+  }
 
-res.json({ pageUrl: data.pageUrl });
-
+  res.json({ pageUrl: data.pageUrl });
 });
+
 
 /* ===================== CHECK CERTIFICATE ===================== */
 
