@@ -119,8 +119,15 @@ app.post("/create-payment", async (req, res) => {
     }
   );
 
-  const data = await response.json();
-  res.json({ pageUrl: data.pageUrl });
+const data = await response.json();
+
+if (!response.ok || !data.pageUrl) {
+  console.error("MONO ERROR:", data);
+  return res.status(400).json(data);
+}
+
+res.json({ pageUrl: data.pageUrl });
+
 });
 
 /* ===================== CHECK CERTIFICATE ===================== */
