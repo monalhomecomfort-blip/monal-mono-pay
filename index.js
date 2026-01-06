@@ -77,7 +77,7 @@ app.get("/", (req, res) => {
 /* ===================== REGISTER ORDER ===================== */
 
 app.post("/register-order", (req, res) => {
-  const { orderId, text, certificates, usedCertificates } = req.body;
+  const { orderId, text, certificates, usedCertificates, certificateType } = req.body;
 
   if (!orderId || !text) {
     return res.status(400).json({ error: "orderId або text відсутні" });
@@ -86,12 +86,12 @@ app.post("/register-order", (req, res) => {
   ORDERS.set(orderId, {
     text,
     certificates: Array.isArray(certificates) ? certificates : null,
-    usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : []
+    usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
+    certificateType: certificateType || "електронний"
   });
 
   res.json({ ok: true });
 });
-
 
 /* ===================== CREATE PAYMENT ===================== */
 
@@ -187,23 +187,24 @@ app.post("/mono-webhook", async (req, res) => {
 📅 Дійсний до: ${expiresAt.toLocaleDateString("uk-UA")}
 `;
 
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: `${SHEET_NAME}!A:H`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            certCode,
-            cert.nominal,
-            createdAt.toISOString(),
-            expiresAt.toISOString(),
-            "",
-            orderId,
-            "active",
-            "електронний"
-          ]]
-        }
-      });
+await sheets.spreadsheets.values.append({
+  spreadsheetId: SHEET_ID,
+  range: `${SHEET_NAME}!A:H`,
+  valueInputOption: "USER_ENTERED",
+  requestBody: {
+    values: [[
+      certCode,
+      cert.nominal,
+      createdAt.toISOString(),
+      expiresAt.toISOString(),
+      "",
+      orderId,
+      "active",
+      order.certificateType || "електронний"
+    ]]
+  }
+});
+
     }
   }
 
