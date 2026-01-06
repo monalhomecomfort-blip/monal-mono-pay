@@ -167,6 +167,15 @@ app.post("/mono-webhook", async (req, res) => {
 🔗 *Референс mono:* \`${orderId}\`
 `;
 
+  // 🎁 Тип сертифікату (для адміна)
+if (order.certificateType) {
+  finalText += `
+🎁 *Тип сертифікату:* ${order.certificateType === "фізичний"
+    ? "Фізичний (потрібен друк і відправка)"
+    : "Електронний"}
+`;
+}
+
   if (order.certificates.length) {
     const createdAt = new Date();
 
