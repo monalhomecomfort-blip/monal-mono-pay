@@ -184,7 +184,7 @@ app.post("/mono-webhook", async (req, res) => {
 `;
 
   // 🎁 Тип сертифікату (для адміна)
-  if (order.certificateType) {
+  if (order.certificates && order.certificates.length > 0) {
     finalText += `
 🎁 *Тип сертифікату:* ${
       order.certificateType === "фізичний"
