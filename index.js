@@ -184,15 +184,18 @@ app.post("/mono-webhook", async (req, res) => {
 `;
 
   // 🎁 Тип сертифікату (для адміна)
-if (order.certificateType) {
-  finalText += `
-🎁 *Тип сертифікату:* ${order.certificateType === "фізичний"
-    ? "Фізичний (потрібен друк і відправка)"
-    : "Електронний"}
+  if (order.certificateType) {
+    finalText += `
+🎁 *Тип сертифікату:* ${
+      order.certificateType === "фізичний"
+        ? "Фізичний (потрібен друк і відправка)"
+        : "Електронний"
+    }
 `;
-}
+  }
 
-  if (order.certificates.length) {
+  /* 🔧 ЄДИНА ПРАВКА ТУТ */
+  if (Array.isArray(order.certificates) && order.certificates.length > 0) {
     const createdAt = new Date();
 
     for (const cert of order.certificates) {
@@ -212,24 +215,23 @@ if (order.certificateType) {
 📅 Дійсний до: ${expiresAt.toLocaleDateString("uk-UA")}
 `;
 
-await sheets.spreadsheets.values.append({
-  spreadsheetId: SHEET_ID,
-  range: `${SHEET_NAME}!A:H`,
-  valueInputOption: "USER_ENTERED",
-  requestBody: {
-    values: [[
-      certCode,
-      cert.nominal,
-      createdAt.toISOString(),
-      expiresAt.toISOString(),
-      "",
-      orderId,
-      "active",
-      order.certificateType || "електронний"
-    ]]
-  }
-});
-
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: `${SHEET_NAME}!A:H`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            certCode,
+            cert.nominal,
+            createdAt.toISOString(),
+            expiresAt.toISOString(),
+            "",
+            orderId,
+            "active",
+            order.certificateType || "електронний"
+          ]]
+        }
+      });
     }
   }
 
@@ -246,7 +248,6 @@ await sheets.spreadsheets.values.append({
   ORDERS.delete(orderId);
   res.sendStatus(200);
 });
-
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
 
 app.post("/send-free-order", async (req, res) => {
