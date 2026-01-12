@@ -18,6 +18,46 @@ const sheets = google.sheets({ version: "v4", auth });
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "certificates";
+const ORDERS_SHEET_NAME = "ORDERS_LOG";
+
+async function appendOrderToOrdersLog({
+  orderId,
+  source,
+  totalAmount,
+  paidAmount,
+  dueAmount,
+  paymentType,
+  buyerName,
+  buyerPhone,
+  delivery,
+  itemsText
+}) {
+  const now = new Date().toISOString();
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: `${ORDERS_SHEET_NAME}!A:N`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        orderId,     // A: ID замовлення
+        source,      // B: Джерело
+        now,         // C: Дата оплати
+        totalAmount, // D: Сума замовлення
+        paidAmount,  // E: Сплачено
+        dueAmount,   // F: До оплати
+        paymentType, // G: Тип оплати
+        buyerName,   // H: Імʼя клієнта
+        buyerPhone,  // I: Телефон
+        delivery,    // J: Доставка
+        itemsText,   // K: Склад замовлення
+        false,       // L: Виконано
+        "",          // M: Дата виконання
+        ""           // N: Примітки
+      ]]
+    }
+  });
+}
 
 /* ===================== ПОГАШЕННЯ СЕРТИФІКАТУ ===================== */
 /* ❗ НЕ ВИКЛИКАЄТЬСЯ ТУТ — БУДЕ ВИКОРИСТАНО ПРИ РЕАЛЬНОМУ ПОГАШЕННІ */
