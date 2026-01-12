@@ -356,14 +356,15 @@ app.post("/send-free-order", async (req, res) => {
   await appendOrderToOrdersLog({
     orderId: orderId,
     source: "site",
-    totalAmount: "",                 // можна залишити порожнім
-    paidAmount: "0",                 // гроші не платили
-    dueAmount: "0",
+    totalAmount: order.totalAmount || "",
+    paidAmount: order.totalAmount || "",
+    dueAmount: 0,
     paymentType: "Оплачено сертифікатом 100%",
-    buyerName: "",
-    buyerPhone: "",
-    delivery: "",
-    itemsText: order.text
+
+    buyerName: order.buyerName || "",
+    buyerPhone: order.buyerPhone || "",
+    delivery: order.delivery || "",
+    itemsText: order.itemsText || ""
   });
 
   await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
