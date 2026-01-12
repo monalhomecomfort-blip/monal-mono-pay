@@ -275,6 +275,20 @@ app.post("/mono-webhook", async (req, res) => {
     }
   }
 
+  // 🧾 ЗАПИС У ORDERS_LOG (СТРАХОВКА)
+  await appendOrderToOrdersLog({
+    orderId: orderId,
+    source: "site",
+    totalAmount: order.totalAmount || "",
+    paidAmount: order.paidAmount || "",
+    dueAmount: order.dueAmount || "",
+    paymentType: order.paymentLabel || "",
+    buyerName: "",       // з сайту зараз у тексті, окремо не виділяємо
+    buyerPhone: "",
+    delivery: "",
+    itemsText: order.text
+  });
+
   await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
