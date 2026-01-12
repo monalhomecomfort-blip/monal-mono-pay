@@ -323,6 +323,20 @@ app.post("/send-free-order", async (req, res) => {
 💳 *Оплата:* Сертифікат (100%)
 `;
 
+  // 🧾 ЗАПИС У ORDERS_LOG — ОПЛАТА СЕРТИФІКАТОМ 100%
+  await appendOrderToOrdersLog({
+    orderId: orderId,
+    source: "site",
+    totalAmount: "",                 // можна залишити порожнім
+    paidAmount: "0",                 // гроші не платили
+    dueAmount: "0",
+    paymentType: "Оплачено сертифікатом 100%",
+    buyerName: "",
+    buyerPhone: "",
+    delivery: "",
+    itemsText: order.text
+  });
+
   await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
