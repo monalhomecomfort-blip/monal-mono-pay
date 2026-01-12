@@ -138,22 +138,26 @@ app.post("/register-order", (req, res) => {
     return res.status(400).json({ error: "orderId або text відсутні" });
   }
 
-  ORDERS.set(orderId, {
-    text,
-    certificates: Array.isArray(certificates) ? certificates : null,
-    usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
-    certificateType: certificateType || "електронний",
+ORDERS.set(orderId, {
+  // для Telegram
+  text,
 
-  // 👇 СТРУКТУРОВАНІ ДАНІ ДЛЯ ТАБЛИЦІ
-    buyerName,
-    buyerPhone,
-    delivery,
-    itemsText,
-    totalAmount,
-    paidAmount,
-    dueAmount,
-    paymentLabel
-  });
+  // для сертифікатів
+  certificates: Array.isArray(certificates) ? certificates : null,
+  usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
+  certificateType: certificateType || "електронний",
+
+  // 👇 ДАНІ ДЛЯ ORDERS_LOG
+  buyerName: buyerName || "",
+  buyerPhone: buyerPhone || "",
+  delivery: delivery || "",
+  itemsText: itemsText || "",
+  totalAmount: totalAmount || "",
+  paidAmount: paidAmount || "",
+  dueAmount: dueAmount || "",
+  paymentLabel: paymentLabel || ""
+});
+
 
   res.json({ ok: true });
 });
@@ -308,10 +312,10 @@ app.post("/mono-webhook", async (req, res) => {
     paidAmount: order.paidAmount || "",
     dueAmount: order.dueAmount || "",
     paymentType: order.paymentLabel || "",
-    buyerName: "",       // з сайту зараз у тексті, окремо не виділяємо
-    buyerPhone: "",
-    delivery: "",
-    itemsText: order.text
+    buyerName: order.buyerName || "",
+    buyerPhone: order.buyerPhone || "",
+    delivery: order.delivery || "",
+    itemsText: order.itemsText || ""
   });
 
   await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
