@@ -117,7 +117,22 @@ app.get("/", (req, res) => {
 /* ===================== REGISTER ORDER ===================== */
 
 app.post("/register-order", (req, res) => {
-  const { orderId, text, certificates, usedCertificates, certificateType } = req.body;
+  const {
+    orderId,
+    text,
+    certificates,
+    usedCertificates,
+    certificateType,
+    buyerName,
+    buyerPhone,
+    delivery,
+    itemsText,
+    totalAmount,
+    paidAmount,
+    dueAmount,
+    paymentLabel
+  } = req.body;
+
 
   if (!orderId || !text) {
     return res.status(400).json({ error: "orderId або text відсутні" });
@@ -127,7 +142,17 @@ app.post("/register-order", (req, res) => {
     text,
     certificates: Array.isArray(certificates) ? certificates : null,
     usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
-    certificateType: certificateType || "електронний"
+    certificateType: certificateType || "електронний",
+
+  // 👇 СТРУКТУРОВАНІ ДАНІ ДЛЯ ТАБЛИЦІ
+    buyerName,
+    buyerPhone,
+    delivery,
+    itemsText,
+    totalAmount,
+    paidAmount,
+    dueAmount,
+    paymentLabel
   });
 
   res.json({ ok: true });
