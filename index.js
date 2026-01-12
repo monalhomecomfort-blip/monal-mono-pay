@@ -351,6 +351,45 @@ app.post("/send-free-order", async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ===================== BOT → ORDERS_LOG ===================== */
+
+app.post("/log-bot-order", async (req, res) => {
+  try {
+    const {
+      orderId,
+      totalAmount,
+      paidAmount,
+      dueAmount,
+      paymentType,
+      buyerName,
+      buyerPhone,
+      delivery,
+      itemsText
+    } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({ error: "orderId missing" });
+    }
+
+    await appendOrderToOrdersLog({
+      orderId,
+      source: "bot",
+      totalAmount: totalAmount || "",
+      paidAmount: paidAmount || "",
+      dueAmount: dueAmount || "",
+      paymentType: paymentType || "",
+      buyerName: buyerName || "",
+      buyerPhone: buyerPhone || "",
+      delivery: delivery || "",
+      itemsText: itemsText || ""
+    });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("BOT LOG ERROR:", e);
+    res.status(500).json({ error: "failed to log bot order" });
+  }
+});
 
 /* ===================== START ===================== */
 
