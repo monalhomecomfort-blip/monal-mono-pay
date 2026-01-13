@@ -96,7 +96,6 @@ async function markCertificateAsUsed(certCode) {
   });
 }
 
-
 /* ===================== CONFIG ===================== */
 
 app.use(cors({
@@ -456,6 +455,59 @@ app.get("/admin/active-orders", async (req, res) => {
     res.json(activeOrders);
   } catch (e) {
     console.error("ACTIVE ORDERS ERROR:", e);
+    res.status(500).json({ error: "failed" });
+  }
+});
+
+// ===================== 👑 ADMIN: MARK ORDER DONE =====================
+app.post("/admin/mark-done", async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    if (!orderId) {
+      return res.status(400).json({ error: "orderId missing" });
+    }
+
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "orders_log!A:Z"
+    });
+
+    const rows = result.data.values || [];
+    if (rows.length < 2) {
+      return res.status(404).json({ error: "no data" });
+    }
+
+    const header = rows[0];
+    const orderIdIndex = header.indexOf("ID замовлення");
+    const doneIndex = header.indexOf("Виконано");
+    const doneAtIndex = header.indexOf("Дата виконання");
+
+    if (orderIdIndex === -1 || doneIndex === -1) {
+      return res.status(500).json({ error: "columns not found" });
+    }
+
+    const rowIndex = rows.findIndex(
+      (r, i) => i > 0 && r[orderIdIndex] === orderId
+    );
+
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: "order not found" });
+    }
+
+    const now = new Date().toISOString();
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `orders_log!${String.fromCharCode(65 + doneIndex)}${rowIndex + 1}:${String.fromCharCode(65 + doneAtIndex)}${rowIndex + 1}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[true, now]]
+      }
+    });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("MARK DONE ERROR:", e);
     res.status(500).json({ error: "failed" });
   }
 });
