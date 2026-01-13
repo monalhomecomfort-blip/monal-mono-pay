@@ -444,7 +444,7 @@ app.get("/admin/active-orders", async (req, res) => {
     });
 
     const activeOrders = data.filter(
-      o => o.processed === "false" || o.processed === false
+      o => o.processed !== true && o.processed !== "true"
     );
 
     res.json(activeOrders);
