@@ -434,14 +434,20 @@ app.get("/admin/active-orders", async (req, res) => {
       return res.json([]);
     }
 
-    const headers = rows[0];
-    const data = rows.slice(1).map(r => {
-      const obj = {};
-      headers.forEach((h, i) => {
-        obj[h] = r[i] || "";
-      });
-      return obj;
-    });
+    const data = rows.slice(1).map(r => ({
+      orderId: r[0] || "",          // ID замовлення
+      source: r[1] || "",           // Джерело
+      paidAt: r[2] || "",           // Дата оплати
+      totalAmount: r[3] || "",      // Сума замовлення
+      paidAmount: r[4] || "",       // Сплачено
+      dueAmount: r[5] || "",        // До оплати
+      paymentType: r[6] || "",      // Тип оплати
+      buyerName: r[7] || "",        // Імʼя клієнта
+      buyerPhone: r[8] || "",       // Телефон
+      delivery: r[9] || "",         // Доставка
+      itemsText: r[10] || "",       // Склад замовлення
+      processed: (r[11] || "").toString().toLowerCase()
+    }));
 
     const activeOrders = data.filter(
       o => o.processed !== true && o.processed !== "true"
