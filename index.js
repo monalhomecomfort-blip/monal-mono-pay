@@ -381,6 +381,43 @@ app.post("/send-free-order", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ================== 👑 ADMIN: ACTIVE ORDERS ==================
+app.get("/admin/active-orders", async (req, res) => {
+  try {
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Orders!A:L"
+    });
+
+    const rows = result.data.values || [];
+    if (rows.length < 2) {
+      return res.json([]);
+    }
+
+    const orders = rows.slice(1).map(r => ({
+      orderId: r[0] || "",
+      buyerName: r[1] || "",
+      buyerPhone: r[2] || "",
+      delivery: r[3] || "",
+      itemsText: r[4] || "",
+      totalAmount: r[5] || "",
+      paidAmount: r[6] || "",
+      dueAmount: r[7] || "",
+      paymentType: r[8] || "",
+      processed: (r[11] || "").toString().toLowerCase()
+    }));
+
+    const activeOrders = orders.filter(
+      o => o.processed !== "true"
+    );
+
+    res.json(activeOrders);
+  } catch (e) {
+    console.error("ADMIN ACTIVE ORDERS ERROR:", e);
+    res.status(500).json([]);
+  }
+});
+
 /* ===================== BOT → ORDERS_LOG ===================== */
 
 app.post("/log-bot-order", async (req, res) => {
