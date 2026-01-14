@@ -512,6 +512,42 @@ app.post("/admin/mark-done", async (req, res) => {
   }
 });
 
+/* ===================== 👑 ADMIN: COMPLETED ORDERS ===================== */
+app.get("/admin/completed-orders", async (req, res) => {
+  try {
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "orders_log!A:Z"
+    });
+
+    const rows = result.data.values || [];
+    if (rows.length < 2) {
+      return res.json([]);
+    }
+
+    const headers = rows[0];
+    const data = rows.slice(1).map(r => {
+      const obj = {};
+      headers.forEach((h, i) => {
+        obj[h] = r[i] || "";
+      });
+      return obj;
+    });
+
+    const completedOrders = data.filter(
+      o =>
+        o["Виконано"] === true ||
+        o["Виконано"] === "TRUE" ||
+        o["Виконано"] === "true"
+    );
+
+    res.json(completedOrders);
+  } catch (e) {
+    console.error("COMPLETED ORDERS ERROR:", e);
+    res.status(500).json([]);
+  }
+});
+
 /* ===================== START ===================== */
 
 const PORT = process.env.PORT || 3000;
