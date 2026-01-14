@@ -234,8 +234,12 @@ app.post("/check-certificate", async (req, res) => {
 /* ===================== MONO WEBHOOK ===================== */
 
 app.post("/mono-webhook", async (req, res) => {
+  console.log("💳 MONO WEBHOOK DATA:", JSON.stringify(req.body, null, 2));
   const data = req.body;
-  if (data.status !== "success") return res.sendStatus(200);
+  if (data.status !== "success") {
+  console.log(`⏳ MONO STATUS: ${data.status}`);
+  return res.sendStatus(200);
+}
 
   const orderId =
     data.reference ||
