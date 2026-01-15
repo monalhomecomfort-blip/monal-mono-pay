@@ -236,10 +236,11 @@ app.post("/check-certificate", async (req, res) => {
 app.post("/mono-webhook", async (req, res) => {
   console.log("💳 MONO WEBHOOK DATA:", JSON.stringify(req.body, null, 2));
   const data = req.body;
+
   if (data.status !== "success") {
-  console.log(`⏳ MONO STATUS: ${data.status}`);
-  return res.sendStatus(200);
-}
+    console.log(`⏳ MONO STATUS: ${data.status}`);
+    return res.sendStatus(200);
+  }
 
   const orderId =
     data.reference ||
@@ -266,7 +267,39 @@ app.post("/mono-webhook", async (req, res) => {
 `;
   }
 
-  /* 🔧 ЄДИНА ПРАВКА ТУТ */
+  /* ===============================
+     🟢 НОВИЙ БЛОК — СПИСАННЯ СЕРТИФІКАТІВ
+     =============================== */
+  if (Array.isArray(order.usedCertificates) && order.usedCertificates.length > 0) {
+    const usedAt = new Date().toISOString();
+
+    for (const code of order.usedCertificates) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `${SHEET_NAME}!A:G`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[
+            code,            // A — код
+            "",              // B — номінал (не чіпаємо)
+            "",              // C — createdAt
+            "",              // D — expiresAt
+            usedAt,          // E — usedAt
+            orderId,         // F — orderId
+            "used"           // G — status
+          ]]
+        }
+      });
+
+      finalText += `
+🎟 Сертифікат \`${code}\` — *використано*
+`;
+    }
+  }
+
+  /* ===============================
+     🎁 СТВОРЕННЯ НОВИХ СЕРТИФІКАТІВ (ЯК БУЛО)
+     =============================== */
   if (Array.isArray(order.certificates) && order.certificates.length > 0) {
     const createdAt = new Date();
 
@@ -307,7 +340,7 @@ app.post("/mono-webhook", async (req, res) => {
     }
   }
 
-  // 🧾 ЗАПИС У ORDERS_LOG (СТРАХОВКА)
+  // 🧾 ЗАПИС У ORDERS_LOG
   await appendOrderToOrdersLog({
     orderId: orderId,
     source: "site",
@@ -334,6 +367,7 @@ app.post("/mono-webhook", async (req, res) => {
   ORDERS.delete(orderId);
   res.sendStatus(200);
 });
+
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
 
 app.post("/send-free-order", async (req, res) => {
