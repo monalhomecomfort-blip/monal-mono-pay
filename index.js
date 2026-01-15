@@ -242,6 +242,13 @@ app.post("/mono-webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
+  // ✅ ЯКЩО БУЛА ЧАСТКОВА ОПЛАТА СЕРТИФІКАТОМ
+  if (order.usedCertificates && order.usedCertificates.length > 0) {
+    for (const code of order.usedCertificates) {
+      await markCertificateAsUsed(code);
+    }
+  }
+
   const orderId =
     data.reference ||
     data.merchantPaymInfo?.reference;
