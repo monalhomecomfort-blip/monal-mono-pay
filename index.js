@@ -265,38 +265,7 @@ app.post("/mono-webhook", async (req, res) => {
         : "Електронний"
     }
 `;
-  }
-
-  /* ===============================
-     🟢 СПИСАННЯ ВИКОРИСТАНИХ СЕРТИФІКАТІВ
-     (ТІЛЬКИ ТУТ І ТІЛЬКИ ПІСЛЯ order)
-     =============================== */
-  if (Array.isArray(order.usedCertificates) && order.usedCertificates.length > 0) {
-    const usedAt = new Date().toISOString();
-
-    for (const code of order.usedCertificates) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: `${SHEET_NAME}!A:G`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[
-            code,            // A — код
-            "",              // B — номінал (не чіпаємо)
-            "",              // C — createdAt
-            "",              // D — expiresAt
-            usedAt,          // E — usedAt
-            orderId,         // F — orderId
-            "used"           // G — status
-          ]]
-        }
-      });
-
-      finalText += `
-🎟 Сертифікат \`${code}\` — *використано*
-`;
-    }
-  }
+  } 
 
   /* ===============================
      🎁 СТВОРЕННЯ НОВИХ СЕРТИФІКАТІВ (ЯК БУЛО)
