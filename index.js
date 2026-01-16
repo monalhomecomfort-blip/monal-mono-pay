@@ -343,6 +343,21 @@ app.post("/mono-webhook", async (req, res) => {
     })
   });
 
+  // 📩 ПОВІДОМЛЕННЯ ПОКУПЦЮ В TG (ПІСЛЯ УСПІШНОЇ ОПЛАТИ)
+  if (order.userChatId) {
+    await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: order.userChatId,
+        text:
+          "✅ Оплату отримано!\n\n" +
+          "Дякуємо за замовлення 💛\n" +
+          "Кошик очищено. Ви можете оформити нове замовлення 👇"
+      })
+    });
+  }
+
   ORDERS.delete(orderId);
   res.sendStatus(200);
 });
