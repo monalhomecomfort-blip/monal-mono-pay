@@ -155,6 +155,8 @@ ORDERS.set(orderId, {
   paidAmount: paidAmount || "",
   dueAmount: dueAmount || "",
   paymentLabel: paymentLabel || ""
+
+  userChatId: req.body.userChatId || null
 });
 
 
