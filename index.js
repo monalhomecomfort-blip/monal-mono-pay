@@ -249,6 +249,13 @@ app.post("/mono-webhook", async (req, res) => {
   const order = ORDERS.get(orderId);
   if (!order) return res.sendStatus(200);
 
+  // 🎟 ПОГАШЕННЯ СЕРТИФІКАТІВ ПІСЛЯ УСПІШНОЇ MONO-ОПЛАТИ
+  if (order.usedCertificates && order.usedCertificates.length) {
+    for (const code of order.usedCertificates) {
+      await markCertificateAsUsed(code);
+    }
+  }
+
   let finalText = order.text;
 
   finalText += `
