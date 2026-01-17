@@ -129,7 +129,8 @@ app.post("/register-order", (req, res) => {
     totalAmount,
     paidAmount,
     dueAmount,
-    paymentLabel
+    paymentLabel,
+    userChatId
   } = req.body;
 
 
@@ -154,8 +155,9 @@ ORDERS.set(orderId, {
   totalAmount: totalAmount || "",
   paidAmount: paidAmount || "",
   dueAmount: dueAmount || "",
-  paymentLabel: paymentLabel || ""
-  
+  paymentLabel: paymentLabel || "",
+
+  userChatId: userChatId || null  
 });
 
   res.json({ ok: true });
@@ -320,7 +322,7 @@ app.post("/mono-webhook", async (req, res) => {
   // 🧾 ЗАПИС У ORDERS_LOG
   await appendOrderToOrdersLog({
     orderId: orderId,
-    source: "site",
+    source: order.userChatId ? "bot" : "site",
     totalAmount: order.totalAmount || "",
     paidAmount: order.paidAmount || "",
     dueAmount: order.dueAmount || "",
