@@ -154,11 +154,9 @@ ORDERS.set(orderId, {
   totalAmount: totalAmount || "",
   paidAmount: paidAmount || "",
   dueAmount: dueAmount || "",
-  paymentLabel: paymentLabel || "",
-
-  userChatId: req.body.userChatId || null
+  paymentLabel: paymentLabel || ""
+  
 });
-
 
   res.json({ ok: true });
 });
