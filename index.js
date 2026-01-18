@@ -154,6 +154,8 @@ app.post("/register-order", (req, res) => {
         // 🔹 ДЖЕРЕЛО ЗАМОВЛЕННЯ
         source: req.body.source || "site",
 
+        userId: req.body.userId || null,
+
         // для сертифікатів
         certificates: Array.isArray(certificates) ? certificates : null,
         usedCertificates: Array.isArray(usedCertificates)
@@ -374,6 +376,26 @@ app.post("/mono-webhook", async (req, res) => {
             }),
         }
     );
+
+    // 📩 СПОВІЩЕННЯ ПОКУПЦЮ В TELEGRAM-БОТІ
+    if (order.userId) {
+        await fetch(
+            `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    chat_id: order.userId,
+                    text:
+                        "✅ Оплату отримано!\n\n" +
+                        "Дякуємо за замовлення 💛\n" +
+                        "Кошик очищено. Ви можете оформити нове замовлення.",
+                }),
+            }
+        );
+    }
 
     ORDERS.delete(orderId);
     res.sendStatus(200);
