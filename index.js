@@ -121,6 +121,13 @@ const ORDERS = new Map();
 
 /* ===================== СПОВІЩЕННЯ АДМІНУ ЄДИНЕ ===================== */
 function buildAdminOrderText({ order, orderId, paymentLabel }) {
+    const total = Number(order.totalAmount || 0);
+    const paidMono = Number(order.paidAmount || 0);
+    const due = Number(order.dueAmount || 0);
+
+    // скільки покрито сертифікатом
+    const paidByCertificate = Math.max(total - paidMono - due, 0);
+
     let text =
         `🔔 *НОВЕ ЗАМОВЛЕННЯ*\n\n` +
         `👤 ${order.buyerName || "—"}\n` +
@@ -128,6 +135,7 @@ function buildAdminOrderText({ order, orderId, paymentLabel }) {
         `📦 ${order.delivery || "—"}\n` +
         `💳 ${paymentLabel}\n`;
 
+    // тип сертифікату (якщо є)
     if (order.certificates && order.certificates.length > 0) {
         text +=
             `🎁 *Тип сертифікату:* ${
@@ -139,9 +147,17 @@ function buildAdminOrderText({ order, orderId, paymentLabel }) {
 
     text +=
         `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
-        `💰 *Сума замовлення:* ${order.totalAmount || 0} грн\n` +
-        `💳 *Сплачено:* ${order.paidAmount || 0} грн\n` +
-        `📦 *До оплати:* ${order.dueAmount || 0} грн\n\n` +
+        `💰 *Сума замовлення:* ${total} грн\n`;
+
+    // показуємо сертифікат ТІЛЬКИ якщо він реально застосований
+    if (paidByCertificate > 0) {
+        text += `🎟 *Оплачено сертифікатом:* ${paidByCertificate} грн\n`;
+    }
+
+    // mono показуємо завжди, але коректно
+    text +=
+        `💳 *Сплачено mono:* ${paidMono} грн\n` +
+        `📦 *До оплати:* ${due} грн\n\n` +
         `🔗 ref: ${orderId}`;
 
     return text;
