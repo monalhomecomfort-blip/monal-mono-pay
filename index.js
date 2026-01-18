@@ -281,6 +281,8 @@ app.post("/mono-webhook", async (req, res) => {
 
     /* 🔧 ЄДИНА ПРАВКА ТУТ */
     if (Array.isArray(order.certificates) && order.certificates.length > 0) {
+        console.log("➡️ GENERATING CERTIFICATES:", order.certificates);
+        
         const createdAt = new Date();
 
         for (const cert of order.certificates) {
