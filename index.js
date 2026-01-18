@@ -279,9 +279,16 @@ app.post("/mono-webhook", async (req, res) => {
         }\n`;
     }
 
+// 🔐 Захист від повторної генерації сертифікатів
+if (order._certificatesGenerated) {
+    console.log("⚠️ Certificates already generated for order:", orderId);
+} else {    
+    
     /* 🔧 ЄДИНА ПРАВКА ТУТ */
     if (Array.isArray(order.certificates) && order.certificates.length > 0) {
         console.log("➡️ GENERATING CERTIFICATES:", order.certificates);
+
+        order._certificatesGenerated = true;
         
         const createdAt = new Date();
 
@@ -325,6 +332,7 @@ app.post("/mono-webhook", async (req, res) => {
             });
         }
     }
+}   
 
     // 🧾 ЗАПИС У ORDERS_LOG (СТРАХОВКА)
     await appendOrderToOrdersLog({
