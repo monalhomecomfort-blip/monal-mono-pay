@@ -286,14 +286,14 @@ app.post("/mono-webhook", async (req, res) => {
         const createdAt = new Date();
 
         for (const cert of order.certificates) {
-            const certCode =
-                "MONAL-" +
-                Math.random()
-                    .toString(36)
-                    .substring(2, 6)
-                    .toUpperCase() +
-                "-" +
-                orderId;
+            const generateBotCertificateCode = () => {
+                const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+                const part1 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+                const part2 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+                return `${part1}-${part2}`;
+            };
+
+            const certCode = generateBotCertificateCode();
 
             const expiresAt = new Date(createdAt);
             expiresAt.setFullYear(createdAt.getFullYear() + 1);
