@@ -74,9 +74,14 @@ async function markCertificateAsUsed(certCode) {
     if (!rows.length) return;
 
     // шукаємо рядок по коду сертифіката
-    const rowIndex = rows.findIndex(
-        (row, idx) => idx > 0 && row[0] === certCode
-    );
+    const normalizedCode = certCode.trim().toUpperCase();
+
+    const rowIndex = rows.findIndex((row, idx) => {
+        if (idx === 0) return false;      // header
+        if (!row[0]) return false;        // empty cell
+
+        return row[0].trim().toUpperCase() === normalizedCode;
+    });
 
     if (rowIndex === -1) return;
 
@@ -113,6 +118,34 @@ app.use(express.json());
 
 // orderId → { text, certificates }
 const ORDERS = new Map();
+
+/* ===================== СПОВІЩЕННЯ АДМІНУ ЄДИНЕ ===================== */
+function buildAdminOrderText({ order, orderId, paymentLabel }) {
+    let text =
+        `🔔 *НОВЕ ЗАМОВЛЕННЯ*\n\n` +
+        `👤 ${order.buyerName || "—"}\n` +
+        `📞 ${order.buyerPhone || "—"}\n` +
+        `📦 ${order.delivery || "—"}\n` +
+        `💳 ${paymentLabel}\n`;
+
+    if (order.certificates && order.certificates.length > 0) {
+        text +=
+            `🎁 *Тип сертифікату:* ${
+                order.certificateType === "фізичний"
+                    ? "Фізичний (потрібен друк і відправка)"
+                    : "Електронний"
+            }\n`;
+    }
+
+    text +=
+        `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
+        `💰 *Сума замовлення:* ${order.totalAmount || 0} грн\n` +
+        `💳 *Сплачено:* ${order.paidAmount || 0} грн\n` +
+        `📦 *До оплати:* ${order.dueAmount || 0} грн\n\n` +
+        `🔗 ref: ${orderId}`;
+
+    return text;
+}
 
 /* ===================== HEALTH ===================== */
 
@@ -276,32 +309,11 @@ app.post("/mono-webhook", async (req, res) => {
     const order = ORDERS.get(orderId);
     if (!order) return res.sendStatus(200);
 
-    // ===============================
-    // 🔔 СПОВІЩЕННЯ АДМІНУ (ЄДИНЕ)
-    // ===============================
-    let finalText =
-        `🔔 *НОВЕ ЗАМОВЛЕННЯ*\n\n` +
-        `👤 ${order.buyerName || "—"}\n` +
-        `📞 ${order.buyerPhone || "—"}\n` +
-        `📦 ${order.delivery || "—"}\n` +
-        `💳 ${order.paymentLabel || "—"}\n`;
-
-    // 🎁 Тип сертифікату (якщо є)
-    if (order.certificates && order.certificates.length > 0) {
-        finalText +=
-            `🎁 *Тип сертифікату:* ${
-                order.certificateType === "фізичний"
-                    ? "Фізичний (потрібен друк і відправка)"
-                    : "Електронний"
-            }\n`;
-    }
-
-    finalText +=
-        `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
-        `💰 *Сума замовлення:* ${order.totalAmount || 0} грн\n` +
-        `💳 *Сплачено:* ${order.paidAmount || 0} грн\n` +
-        `📦 *До оплати:* ${order.dueAmount || 0} грн\n\n` +
-        `🔗 ref: ${orderId}`;
+    const finalText = buildAdminOrderText({
+        order,
+        orderId,
+        paymentLabel: order.paymentLabel || "Mono",
+    });
 
     // ===============================
     // 🎁 ГЕНЕРАЦІЯ СЕРТИФІКАТІВ
@@ -427,9 +439,11 @@ app.post("/send-free-order", async (req, res) => {
         }
     }
 
-    const finalText =
-        order.text +
-        `\n💳 *Оплата:* Сертифікат (100%)\n`;
+    const finalText = buildAdminOrderText({
+        order,
+        orderId,
+        paymentLabel: "Оплачено сертифікатом 100%",
+    });
 
     // 🧾 ЗАПИС У ORDERS_LOG — ОПЛАТА СЕРТИФІКАТОМ 100%
     await appendOrderToOrdersLog({
