@@ -238,7 +238,12 @@ app.post("/check-certificate", async (req, res) => {
     });
 
     const rows = result.data.values || [];
-    const row = rows.find((r) => r[0] === code);
+    const normalizedCode = code.trim().toUpperCase();
+
+    const row = rows.find((r) => {
+        if (!r[0]) return false;
+        return r[0].trim().toUpperCase() === normalizedCode;
+    });
 
     if (!row || row[6] !== "active") {
         return res.json({ valid: false });
