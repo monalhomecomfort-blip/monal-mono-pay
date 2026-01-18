@@ -309,6 +309,13 @@ app.post("/mono-webhook", async (req, res) => {
     const order = ORDERS.get(orderId);
     if (!order) return res.sendStatus(200);
 
+    // ✅ ПОГАШЕННЯ СЕРТИФІКАТУ ПРИ СКЛАДНІЙ ОПЛАТІ (CERT + MONO)
+    if (Array.isArray(order.usedCertificates) && order.usedCertificates.length > 0) {
+        for (const code of order.usedCertificates) {
+            await markCertificateAsUsed(code);
+        }
+    }
+
     const finalText = buildAdminOrderText({
         order,
         orderId,
