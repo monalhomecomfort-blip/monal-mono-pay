@@ -359,7 +359,7 @@ app.post("/mono-webhook", async (req, res) => {
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
 
 app.post("/send-free-order", async (req, res) => {
-    const { orderId } = req.body;
+    const { orderId, usedCertificates } = req.body;
 
     if (!orderId) return res.sendStatus(400);
 
@@ -367,8 +367,12 @@ app.post("/send-free-order", async (req, res) => {
     if (!order) return res.sendStatus(404);
 
     // ✅ позначаємо використаний сертифікат (якщо був)
-    if (order.usedCertificates && order.usedCertificates.length) {
-        for (const code of order.usedCertificates) {
+    const certsToUse = Array.isArray(usedCertificates) && usedCertificates.length
+        ? usedCertificates
+        : (order.usedCertificates || []);
+
+    if (certsToUse.length) {
+        for (const code of certsToUse) {
             await markCertificateAsUsed(code);
         }
     }
