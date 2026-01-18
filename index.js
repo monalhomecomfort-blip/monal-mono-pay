@@ -139,6 +139,8 @@ app.post("/register-order", (req, res) => {
         paymentLabel,
     } = req.body;
 
+    console.log("REGISTER ORDER CERTIFICATES:", certificates);
+
     if (!orderId || !text) {
         return res.status(400).json({
             error: "orderId або text відсутні",
