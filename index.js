@@ -151,6 +151,9 @@ app.post("/register-order", (req, res) => {
         // для Telegram
         text,
 
+        // 🔹 ДЖЕРЕЛО ЗАМОВЛЕННЯ
+        source: req.body.source || "site",
+
         // для сертифікатів
         certificates: Array.isArray(certificates) ? certificates : null,
         usedCertificates: Array.isArray(usedCertificates)
@@ -337,7 +340,7 @@ if (order._certificatesGenerated) {
     // 🧾 ЗАПИС У ORDERS_LOG (СТРАХОВКА)
     await appendOrderToOrdersLog({
         orderId: orderId,
-        source: "site",
+        source: (order && order.source) ? order.source : "site",
         totalAmount: order.totalAmount || "",
         paidAmount: order.paidAmount || "",
         dueAmount: order.dueAmount || "",
