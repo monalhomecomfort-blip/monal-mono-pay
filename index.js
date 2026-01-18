@@ -269,50 +269,57 @@ app.post("/mono-webhook", async (req, res) => {
     const order = ORDERS.get(orderId);
     if (!order) return res.sendStatus(200);
 
-    let finalText = order.text;
+    // ===============================
+    // 🔔 СПОВІЩЕННЯ АДМІНУ (ЄДИНЕ)
+    // ===============================
+    let finalText =
+        `🔔 *НОВЕ ЗАМОВЛЕННЯ*\n\n` +
+        `👤 ${order.buyerName || "—"}\n` +
+        `📞 ${order.buyerPhone || "—"}\n` +
+        `📦 ${order.delivery || "—"}\n` +
+        `💳 ${order.paymentLabel || "—"}\n`;
 
-    finalText += `\n🔗 *Референс mono:* ${orderId}\n`;
-
-    // 🎁 Тип сертифікату (для адміна)
+    // 🎁 Тип сертифікату (якщо є)
     if (order.certificates && order.certificates.length > 0) {
-        finalText += `🎁 *Тип сертифікату:* ${
-            order.certificateType === "фізичний"
-                ? "Фізичний (потрібен друк і відправка)"
-                : "Електронний"
-        }\n`;
+        finalText +=
+            `🎁 *Тип сертифікату:* ${
+                order.certificateType === "фізичний"
+                    ? "Фізичний (потрібен друк і відправка)"
+                    : "Електронний"
+            }\n`;
     }
 
-// 🔐 Захист від повторної генерації сертифікатів
-if (order._certificatesGenerated) {
-    console.log("⚠️ Certificates already generated for order:", orderId);
-} else {    
-    
-    /* 🔧 ЄДИНА ПРАВКА ТУТ */
-    if (Array.isArray(order.certificates) && order.certificates.length > 0) {
-        console.log("➡️ GENERATING CERTIFICATES:", order.certificates);
+    finalText +=
+        `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
+        `💰 *Сума замовлення:* ${order.totalAmount || 0} грн\n` +
+        `💳 *Сплачено:* ${order.paidAmount || 0} грн\n` +
+        `📦 *До оплати:* ${order.dueAmount || 0} грн\n\n` +
+        `🔗 ref: ${orderId}`;
 
+    // ===============================
+    // 🎁 ГЕНЕРАЦІЯ СЕРТИФІКАТІВ
+    // ===============================
+    if (
+        !order._certificatesGenerated &&
+        Array.isArray(order.certificates) &&
+        order.certificates.length > 0
+    ) {
         order._certificatesGenerated = true;
-        
+
         const createdAt = new Date();
 
         for (const cert of order.certificates) {
-            const generateBotCertificateCode = () => {
-                const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-                const part1 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-                const part2 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-                return `${part1}-${part2}`;
-            };
-
-            const certCode = generateBotCertificateCode();
+            const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+            const part1 = Array.from({ length: 4 }, () =>
+                chars[Math.floor(Math.random() * chars.length)]
+            ).join("");
+            const part2 = Array.from({ length: 4 }, () =>
+                chars[Math.floor(Math.random() * chars.length)]
+            ).join("");
+            const certCode = `${part1}-${part2}`;
 
             const expiresAt = new Date(createdAt);
             expiresAt.setFullYear(createdAt.getFullYear() + 1);
-
-            finalText +=
-                `🎁 *ПОДАРУНКОВИЙ СЕРТИФІКАТ*\n` +
-                `🔐 Код: ${certCode}\n` +
-                `💰 Номінал: ${cert.nominal} грн\n` +
-                `📅 Дійсний до: ${expiresAt.toLocaleDateString("uk-UA")}\n\n`;
 
             await sheets.spreadsheets.values.append({
                 spreadsheetId: SHEET_ID,
@@ -335,12 +342,13 @@ if (order._certificatesGenerated) {
             });
         }
     }
-}   
 
-    // 🧾 ЗАПИС У ORDERS_LOG (СТРАХОВКА)
+    // ===============================
+    // 🧾 ЗАПИС У ORDERS_LOG
+    // ===============================
     await appendOrderToOrdersLog({
         orderId: orderId,
-        source: (order && order.source) ? order.source : "site",
+        source: order.source || "site",
         totalAmount: order.totalAmount || "",
         paidAmount: order.paidAmount || "",
         dueAmount: order.dueAmount || "",
@@ -351,13 +359,14 @@ if (order._certificatesGenerated) {
         itemsText: order.itemsText || "",
     });
 
+    // ===============================
+    // 📩 ВІДПРАВКА АДМІНУ
+    // ===============================
     await fetch(
         `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
         {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 chat_id: process.env.CHAT_ID,
                 text: finalText,
@@ -367,7 +376,6 @@ if (order._certificatesGenerated) {
     );
 
     ORDERS.delete(orderId);
-
     res.sendStatus(200);
 });
 
