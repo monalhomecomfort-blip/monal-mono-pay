@@ -379,6 +379,7 @@ app.post("/mono-webhook", async (req, res) => {
 
     // 📩 СПОВІЩЕННЯ ПОКУПЦЮ В TELEGRAM-БОТІ
     if (order.userId) {
+        // 1️⃣ Повідомлення покупцю
         await fetch(
             `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
             {
@@ -396,7 +397,20 @@ app.post("/mono-webhook", async (req, res) => {
                         resize_keyboard: true
                     }
                 }),
+            }
+        );
 
+        // 2️⃣ 🔥 СКАЗАТИ БОТУ ОЧИСТИТИ КОШИК І CHECKOUT
+        await fetch(
+            "https://monal-mono-pay-production.up.railway.app/bot-finalize",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    userId: order.userId,
+                }),
             }
         );
     }
