@@ -291,11 +291,31 @@ app.post("/mono-webhook", async (req, res) => {
             }\n`;
     }
 
+    // ===============================
+    // 💰 РОЗРАХУНОК СУМ
+    // ===============================
+    const totalAmount = Number(order.totalAmount) || 0;
+    const paidByMono = Number(order.paidAmount) || 0;
+    const dueAmount = Number(order.dueAmount) || 0;
+
+    // 🎟 сплачено сертифікатом
+    const paidByCertificate = Math.max(
+        totalAmount - paidByMono - dueAmount,
+        0
+    );
+
+    // ===============================
+    // 🛒 ТОВАРИ + СУМИ
+    // ===============================
     finalText +=
         `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
-        `💰 *Сума замовлення:* ${order.totalAmount || 0} грн\n` +
-        `💳 *Сплачено:* ${order.paidAmount || 0} грн\n` +
-        `📦 *До оплати:* ${order.dueAmount || 0} грн\n\n` +
+        `💰 *Сума замовлення:* ${totalAmount} грн\n` +
+        (paidByCertificate > 0
+            ? `🎟 *Сертифікатом:* ${paidByCertificate} грн\n`
+            : ""
+        ) +
+        `💳 *Через mono:* ${paidByMono} грн\n` +
+        `📦 *До оплати:* ${dueAmount} грн\n\n` +
         `🔗 ref: ${orderId}`;
 
     // ===============================
@@ -386,7 +406,6 @@ app.post("/mono-webhook", async (req, res) => {
 
     // 📩 СПОВІЩЕННЯ ПОКУПЦЮ В TELEGRAM-БОТІ
     if (order.userId) {
-        // 1️⃣ Повідомлення покупцю
         await fetch(
             `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
             {
@@ -407,7 +426,6 @@ app.post("/mono-webhook", async (req, res) => {
             }
         );
 
-        // 2️⃣ 🔥 СКАЗАТИ БОТУ ОЧИСТИТИ КОШИК І CHECKOUT
         await fetch(
             "https://monal-mono-pay-production.up.railway.app/bot-finalize",
             {
@@ -425,6 +443,7 @@ app.post("/mono-webhook", async (req, res) => {
     ORDERS.delete(orderId);
     res.sendStatus(200);
 });
+
 
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
 
@@ -484,7 +503,6 @@ app.post("/send-free-order", async (req, res) => {
 
     res.json({ ok: true });
 });
-
 
 /* ===================== BOT → ORDERS_LOG ===================== */
 
