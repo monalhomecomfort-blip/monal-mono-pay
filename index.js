@@ -240,8 +240,20 @@ app.post("/check-certificate", async (req, res) => {
     const rows = result.data.values || [];
     const row = rows.find((r) => r[0] === code);
 
-    if (!row || row[6] !== "active") {
-        return res.json({ valid: false });
+    if (!row) {
+        return res.json({ valid: false, reason: "not_found" });
+    }
+
+    const status = row[6];          // G — status
+    const expiresAt = row[3];       // D — expiresAt (ISO)
+    const now = new Date();
+
+    if (status !== "active") {
+        return res.json({ valid: false, reason: "used" });
+    }
+
+    if (!expiresAt || new Date(expiresAt) < now) {
+        return res.json({ valid: false, reason: "expired" });
     }
 
     res.json({
@@ -341,7 +353,7 @@ app.post("/mono-webhook", async (req, res) => {
             const certCode = `${part1}-${part2}`;
 
             const expiresAt = new Date(createdAt);
-            expiresAt.setFullYear(createdAt.getFullYear() + 1);
+            expiresAt.setMonth(createdAt.getMonth() + 3);
 
             await sheets.spreadsheets.values.append({
                 spreadsheetId: SHEET_ID,
