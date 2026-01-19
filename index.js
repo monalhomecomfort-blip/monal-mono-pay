@@ -345,6 +345,13 @@ app.post("/mono-webhook", async (req, res) => {
         }
     }
 
+    // 🔥 ПОЗНАЧАЄМО СЕРТИФІКАТ ВИКОРИСТАНИМ ПРИ СКЛАДНІЙ ОПЛАТІ
+    if (order.usedCertificates && order.usedCertificates.length > 0) {
+        for (const code of order.usedCertificates) {
+            await markCertificateAsUsed(code);
+        }
+    }
+
     // ===============================
     // 🧾 ЗАПИС У ORDERS_LOG
     // ===============================
