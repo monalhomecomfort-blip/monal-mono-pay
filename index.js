@@ -32,7 +32,9 @@ async function appendOrderToOrdersLog({
     delivery,
     itemsText,
 }) {
-    const now = new Date().toISOString();
+    const now = new Date().toLocaleString("sv-SE", {
+        timeZone: "Europe/Kyiv"
+    }).replace(" ", "T");
 
     await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
@@ -634,7 +636,9 @@ app.post("/admin/mark-done", async (req, res) => {
             return res.status(404).json({ error: "order not found" });
         }
 
-        const now = new Date().toISOString();
+        const now = new Date().toLocaleString("sv-SE", {
+            timeZone: "Europe/Kyiv"
+        }).replace(" ", "T");
 
         await sheets.spreadsheets.values.update({
             spreadsheetId: SHEET_ID,
