@@ -14,34 +14,14 @@ const auth = new google.auth.GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-const sheets = google.sheets({ version: "v4", auth });
+const sheets = google.sheets({
+    version: "v4",
+    auth,
+});
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "certificates";
 const ORDERS_SHEET_NAME = "ORDERS_LOG";
-
-async function getCertificatesTotal(codes = []) {
-    if (!Array.isArray(codes) || codes.length === 0) return 0;
-
-    const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: `${SHEET_NAME}!A:C`, // A — code, B — nominal
-    });
-
-    const rows = res.data.values || [];
-    if (!rows.length) return 0;
-
-    let total = 0;
-
-    for (const code of codes) {
-        const row = rows.find(r => r[0] === code);
-        if (row && row[1]) {
-            total += Number(row[1]) || 0;
-        }
-    }
-
-    return total;
-}
 
 async function appendOrderToOrdersLog({
     orderId,
@@ -55,44 +35,36 @@ async function appendOrderToOrdersLog({
     delivery,
     itemsText,
 }) {
-    const now = new Date().toLocaleString("sv-SE", {
-        timeZone: "Europe/Kyiv"
-    }).replace(" ", "T");
+    const now = new Date()
+        .toLocaleString("sv-SE", { timeZone: "Europe/Kyiv" })
+        .replace(" ", "T");
 
-const paidByBank = Number(paidAmount) || 0;
-const paidByCertificate = await getCertificatesTotal(
-    ORDERS.get(orderId)?.usedCertificates || []
-);
-
-const finalDueAmount =
-    Number(totalAmount || 0) - paidByBank - paidByCertificate;
-
-await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: `${ORDERS_SHEET_NAME}!A:O`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-        values: [
-            [
-                orderId,                // A
-                source,                 // B
-                now,                    // C
-                totalAmount,            // D
-                paidByBank,             // E  Сплачено банк
-                paidByCertificate,      // F  Сплачено сертифікатом
-                Math.max(finalDueAmount, 0), // G  До оплати
-                paymentType,            // H
-                buyerName,              // I
-                buyerPhone,             // J
-                delivery,               // K
-                itemsText,              // L
-                false,                  // M
-                "",                     // N
-                "",                     // O
+    await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: `${ORDERS_SHEET_NAME}!A:N`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+            values: [
+                [
+                    orderId,     // A: ID замовлення
+                    source,      // B: Джерело
+                    now,         // C: Дата оплати
+                    totalAmount, // D: Сума замовлення
+                    paidAmount,  // E: Сплачено
+                    dueAmount,   // F: До оплати
+                    paymentType, // G: Тип оплати
+                    buyerName,   // H: Імʼя клієнта
+                    buyerPhone,  // I: Телефон
+                    delivery,    // J: Доставка
+                    itemsText,   // K: Склад замовлення
+                    false,       // L: Виконано
+                    "",          // M: Дата виконання
+                    "",          // N: Примітки
+                ],
             ],
-        ],
-    },
-});
+        },
+    });
+}
 
 /* ===================== ПОГАШЕННЯ СЕРТИФІКАТУ ===================== */
 /* ❗ НЕ ВИКЛИКАЄТЬСЯ ТУТ — БУДЕ ВИКОРИСТАНО ПРИ РЕАЛЬНОМУ ПОГАШЕННІ */
@@ -133,7 +105,6 @@ async function markCertificateAsUsed(certCode) {
         },
     });
 }
-
 /* ===================== CONFIG ===================== */
 
 app.use(
@@ -147,11 +118,13 @@ app.use(express.json());
 // orderId → { text, certificates }
 const ORDERS = new Map();
 
+
 /* ===================== HEALTH ===================== */
 
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
 });
+
 
 /* ===================== REGISTER ORDER ===================== */
 
@@ -186,14 +159,11 @@ app.post("/register-order", (req, res) => {
 
         // 🔹 ДЖЕРЕЛО ЗАМОВЛЕННЯ
         source: req.body.source || "site",
-
         userId: req.body.userId || null,
 
         // для сертифікатів
         certificates: Array.isArray(certificates) ? certificates : null,
-        usedCertificates: Array.isArray(usedCertificates)
-            ? usedCertificates
-            : [],
+        usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
         certificateType: certificateType || "електронний",
 
         // 👇 ДАНІ ДЛЯ ORDERS_LOG
@@ -209,7 +179,6 @@ app.post("/register-order", (req, res) => {
 
     res.json({ ok: true });
 });
-
 /* ===================== CREATE PAYMENT ===================== */
 
 app.post("/create-payment", async (req, res) => {
@@ -256,6 +225,7 @@ app.post("/create-payment", async (req, res) => {
     res.json({ pageUrl: data.pageUrl });
 });
 
+
 /* ===================== CHECK CERTIFICATE ===================== */
 
 app.post("/check-certificate", async (req, res) => {
@@ -277,8 +247,8 @@ app.post("/check-certificate", async (req, res) => {
         return res.json({ valid: false, reason: "not_found" });
     }
 
-    const status = row[6];          // G — status
-    const expiresAt = row[3];       // D — expiresAt (ISO)
+    const status = row[6];     // G — status
+    const expiresAt = row[3];  // D — expiresAt (ISO)
     const now = new Date();
 
     if (status !== "active") {
@@ -294,7 +264,6 @@ app.post("/check-certificate", async (req, res) => {
         nominal: Number(row[1]),
     });
 });
-
 /* ===================== MONO WEBHOOK ===================== */
 
 app.post("/mono-webhook", async (req, res) => {
@@ -319,8 +288,9 @@ app.post("/mono-webhook", async (req, res) => {
     // ===============================
     // 🔔 СПОВІЩЕННЯ АДМІНУ (ЄДИНЕ)
     // ===============================
+
     let finalText =
-        `🔔 *НОВЕ ЗАМОВЛЕННЯ*\n\n` +
+        "🔔 *НОВЕ ЗАМОВЛЕННЯ*\n\n" +
         `👤 ${order.buyerName || "—"}\n` +
         `📞 ${order.buyerPhone || "—"}\n` +
         `📦 ${order.delivery || "—"}\n` +
@@ -339,6 +309,7 @@ app.post("/mono-webhook", async (req, res) => {
     // ===============================
     // 💰 РОЗРАХУНОК СУМ
     // ===============================
+
     const totalAmount = Number(order.totalAmount) || 0;
     const paidByMono = Number(order.paidAmount) || 0;
     const dueAmount = Number(order.dueAmount) || 0;
@@ -352,142 +323,159 @@ app.post("/mono-webhook", async (req, res) => {
     // ===============================
     // 🛒 ТОВАРИ + СУМИ
     // ===============================
+
     finalText +=
         `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
         `💰 *Сума замовлення:* ${totalAmount} грн\n` +
         (paidByCertificate > 0
             ? `🎟 *Сертифікатом:* ${paidByCertificate} грн\n`
-            : ""
-        ) +
+            : "") +
         `💳 *Через mono:* ${paidByMono} грн\n` +
         `📦 *До оплати:* ${dueAmount} грн\n\n` +
         `🔗 ref: ${orderId}`;
 
-    // ===============================
-    // 🎁 ГЕНЕРАЦІЯ СЕРТИФІКАТІВ
-    // ===============================
-    if (
-        !order._certificatesGenerated &&
-        Array.isArray(order.certificates) &&
-        order.certificates.length > 0
-    ) {
-        order._certificatesGenerated = true;
+    // ⬇️ далі у тебе йде send / логування (як було)
+});
+// ===============================
+// 🎁 ГЕНЕРАЦІЯ СЕРТИФІКАТІВ
+// ===============================
 
-        const createdAt = new Date();
+if (
+    !order._certificatesGenerated &&
+    Array.isArray(order.certificates) &&
+    order.certificates.length > 0
+) {
+    order._certificatesGenerated = true;
 
-        for (const cert of order.certificates) {
-            const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-            const part1 = Array.from({ length: 4 }, () =>
-                chars[Math.floor(Math.random() * chars.length)]
-            ).join("");
-            const part2 = Array.from({ length: 4 }, () =>
-                chars[Math.floor(Math.random() * chars.length)]
-            ).join("");
-            const certCode = `${part1}-${part2}`;
+    const createdAt = new Date();
 
-            const expiresAt = new Date(createdAt);
-            expiresAt.setMonth(createdAt.getMonth() + 3);
+    for (const cert of order.certificates) {
+        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-            await sheets.spreadsheets.values.append({
-                spreadsheetId: SHEET_ID,
-                range: `${SHEET_NAME}!A:H`,
-                valueInputOption: "USER_ENTERED",
-                requestBody: {
-                    values: [
-                        [
-                            certCode,
-                            cert.nominal,
-                            createdAt.toISOString(),
-                            expiresAt.toISOString(),
-                            "",
-                            orderId,
-                            "active",
-                            order.certificateType || "електронний",
-                        ],
+        const part1 = Array.from(
+            { length: 4 },
+            () => chars[Math.floor(Math.random() * chars.length)]
+        ).join("");
+
+        const part2 = Array.from(
+            { length: 4 },
+            () => chars[Math.floor(Math.random() * chars.length)]
+        ).join("");
+
+        const certCode = `${part1}-${part2}`;
+
+        const expiresAt = new Date(createdAt);
+        expiresAt.setMonth(createdAt.getMonth() + 3);
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: `${SHEET_NAME}!A:H`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+                values: [
+                    [
+                        certCode,
+                        cert.nominal,
+                        createdAt.toISOString(),
+                        expiresAt.toISOString(),
+                        "",
+                        orderId,
+                        "active",
+                        order.certificateType || "електронний",
                     ],
-                },
-            });
-        }
+                ],
+            },
+        });
     }
+}
 
-    // 🔥 ПОЗНАЧАЄМО СЕРТИФІКАТ ВИКОРИСТАНИМ ПРИ СКЛАДНІЙ ОПЛАТІ
-    if (order.usedCertificates && order.usedCertificates.length > 0) {
-        for (const code of order.usedCertificates) {
-            await markCertificateAsUsed(code);
-        }
+
+// 🔥 ПОЗНАЧАЄМО СЕРТИФІКАТ ВИКОРИСТАНИМ ПРИ СКЛАДНІЙ ОПЛАТІ
+
+if (order.usedCertificates && order.usedCertificates.length > 0) {
+    for (const code of order.usedCertificates) {
+        await markCertificateAsUsed(code);
     }
+}
+// ===============================
+// 🧾 ЗАПИС У ORDERS_LOG
+// ===============================
 
-    // ===============================
-    // 🧾 ЗАПИС У ORDERS_LOG
-    // ===============================
-    await appendOrderToOrdersLog({
-        orderId: orderId,
-        source: order.source || "site",
-        totalAmount: order.totalAmount || "",
-        paidAmount: order.paidAmount || "",
-        dueAmount: order.dueAmount || "",
-        paymentType: order.paymentLabel || "",
-        buyerName: order.buyerName || "",
-        buyerPhone: order.buyerPhone || "",
-        delivery: order.delivery || "",
-        itemsText: order.itemsText || "",
-    });
+await appendOrderToOrdersLog({
+    orderId: orderId,
+    source: order.source || "site",
+    totalAmount: order.totalAmount || "",
+    paidAmount: order.paidAmount || "",
+    dueAmount: order.dueAmount || "",
+    paymentType: order.paymentLabel || "",
+    buyerName: order.buyerName || "",
+    buyerPhone: order.buyerPhone || "",
+    delivery: order.delivery || "",
+    itemsText: order.itemsText || "",
+});
 
-    // ===============================
-    // 📩 ВІДПРАВКА АДМІНУ
-    // ===============================
+
+// ===============================
+// 📩 ВІДПРАВКА АДМІНУ
+// ===============================
+
+await fetch(
+    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
+    {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            chat_id: process.env.CHAT_ID,
+            text: finalText,
+            parse_mode: "Markdown",
+        }),
+    }
+);
+
+
+// 📩 СПОВІЩЕННЯ ПОКУПЦЮ В TELEGRAM-БОТІ
+
+if (order.userId) {
     await fetch(
         `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
         {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+            },
             body: JSON.stringify({
-                chat_id: process.env.CHAT_ID,
-                text: finalText,
-                parse_mode: "Markdown",
+                chat_id: order.userId,
+                text:
+                    "✅ Оплату отримано!\n\n" +
+                    "Дякуємо за замовлення 💛",
+                reply_markup: {
+                    keyboard: [[{ text: "🛒 Почати замовлення" }]],
+                    resize_keyboard: true,
+                },
             }),
         }
     );
 
-    // 📩 СПОВІЩЕННЯ ПОКУПЦЮ В TELEGRAM-БОТІ
-    if (order.userId) {
-        await fetch(
-            `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    chat_id: order.userId,
-                    text:
-                        "✅ Оплату отримано!\n\n" +
-                        "Дякуємо за замовлення 💛",
-                    reply_markup: {
-                        keyboard: [[{ text: "🛒 Почати замовлення" }]],
-                        resize_keyboard: true
-                    }
-                }),
-            }
-        );
+    await fetch(
+        "https://monal-mono-pay-production.up.railway.app/bot-finalize",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                userId: order.userId,
+            }),
+        }
+    );
+}
 
-        await fetch(
-            "https://monal-mono-pay-production.up.railway.app/bot-finalize",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    userId: order.userId,
-                }),
-            }
-        );
-    }
-
-    ORDERS.delete(orderId);
-    res.sendStatus(200);
+ORDERS.delete(orderId);
+res.sendStatus(200);
 });
+
 
 
 /* ===================== FREE ORDER (CERTIFICATE 100%) ===================== */
@@ -501,9 +489,10 @@ app.post("/send-free-order", async (req, res) => {
     if (!order) return res.sendStatus(404);
 
     // ✅ позначаємо використаний сертифікат (якщо був)
-    const certsToUse = Array.isArray(usedCertificates) && usedCertificates.length
-        ? usedCertificates
-        : (order.usedCertificates || []);
+    const certsToUse =
+        Array.isArray(usedCertificates) && usedCertificates.length
+            ? usedCertificates
+            : order.usedCertificates || [];
 
     if (certsToUse.length) {
         for (const code of certsToUse) {
@@ -513,7 +502,7 @@ app.post("/send-free-order", async (req, res) => {
 
     const finalText =
         order.text +
-        `\n💳 *Оплата:* Сертифікат (100%)\n`;
+        "\n💳 *Оплата:* Сертифікат (100%)\n";
 
     // 🧾 ЗАПИС У ORDERS_LOG — ОПЛАТА СЕРТИФІКАТОМ 100%
     await appendOrderToOrdersLog({
@@ -545,10 +534,8 @@ app.post("/send-free-order", async (req, res) => {
     );
 
     ORDERS.delete(orderId);
-
     res.json({ ok: true });
 });
-
 /* ===================== BOT → ORDERS_LOG ===================== */
 
 app.post("/log-bot-order", async (req, res) => {
@@ -589,6 +576,7 @@ app.post("/log-bot-order", async (req, res) => {
     }
 });
 
+
 /* ===================== GET ACTIVE ORDERS ===================== */
 
 app.get("/admin/active-orders", async (req, res) => {
@@ -599,6 +587,7 @@ app.get("/admin/active-orders", async (req, res) => {
         });
 
         const rows = result.data.values || [];
+
         if (rows.length < 2) {
             return res.json([]);
         }
@@ -608,19 +597,15 @@ app.get("/admin/active-orders", async (req, res) => {
             source: r[1] || "",         // Джерело
             paidAt: r[2] || "",         // Дата оплати
             totalAmount: r[3] || "",    // Сума замовлення
-
-            paidAmount: r[4] || "",     // Сплачено банк  (колонка перейменована)
-            paidByCertificate: r[5] || "", // Сплачено сертифікатом (нова колонка)
-
-            dueAmount: r[6] || "",      // До оплати
-            paymentType: r[7] || "",    // Тип оплати
-            buyerName: r[8] || "",      // Імʼя клієнта
-            buyerPhone: r[9] || "",     // Телефон
-            delivery: r[10] || "",      // Доставка
-            itemsText: r[11] || "",     // Склад замовлення
-
-            processed: (r[12] || "").toString().toLowerCase(),
-       }));
+            paidAmount: r[4] || "",     // Сплачено
+            dueAmount: r[5] || "",      // До оплати
+            paymentType: r[6] || "",    // Тип оплати
+            buyerName: r[7] || "",      // Імʼя клієнта
+            buyerPhone: r[8] || "",     // Телефон
+            delivery: r[9] || "",       // Доставка
+            itemsText: r[10] || "",     // Склад замовлення
+            processed: (r[11] || "").toString().toLowerCase(),
+        }));
 
         const activeOrders = data.filter(
             (o) => o.processed !== true && o.processed !== "true"
@@ -632,8 +617,6 @@ app.get("/admin/active-orders", async (req, res) => {
         res.status(500).json({ error: "failed" });
     }
 });
-
-
 // ===================== 👑 ADMIN: MARK ORDER DONE =====================
 
 app.post("/admin/mark-done", async (req, res) => {
@@ -650,6 +633,7 @@ app.post("/admin/mark-done", async (req, res) => {
         });
 
         const rows = result.data.values || [];
+
         if (rows.length < 2) {
             return res.status(404).json({ error: "no data" });
         }
@@ -671,15 +655,17 @@ app.post("/admin/mark-done", async (req, res) => {
             return res.status(404).json({ error: "order not found" });
         }
 
-        const now = new Date().toLocaleString("sv-SE", {
-            timeZone: "Europe/Kyiv"
-        }).replace(" ", "T");
+        const now = new Date()
+            .toLocaleString("sv-SE", { timeZone: "Europe/Kyiv" })
+            .replace(" ", "T");
 
         await sheets.spreadsheets.values.update({
             spreadsheetId: SHEET_ID,
-            range: `orders_log!${String.fromCharCode(65 + doneIndex)}${
-                rowIndex + 1
-            }:${String.fromCharCode(65 + doneAtIndex)}${rowIndex + 1}`,
+            range: `orders_log!${String.fromCharCode(
+                65 + doneIndex
+            )}${rowIndex + 1}:${String.fromCharCode(
+                65 + doneAtIndex
+            )}${rowIndex + 1}`,
             valueInputOption: "USER_ENTERED",
             requestBody: {
                 values: [[true, now]],
@@ -693,6 +679,7 @@ app.post("/admin/mark-done", async (req, res) => {
     }
 });
 
+
 /* ===================== 👑 ADMIN: COMPLETED ORDERS ===================== */
 
 app.get("/admin/completed-orders", async (req, res) => {
@@ -703,6 +690,7 @@ app.get("/admin/completed-orders", async (req, res) => {
         });
 
         const rows = result.data.values || [];
+
         if (rows.length < 2) {
             return res.json([]);
         }
