@@ -20,6 +20,29 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "certificates";
 const ORDERS_SHEET_NAME = "ORDERS_LOG";
 
+async function getCertificatesTotal(codes = []) {
+    if (!Array.isArray(codes) || codes.length === 0) return 0;
+
+    const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: `${SHEET_NAME}!A:C`, // A — code, B — nominal
+    });
+
+    const rows = res.data.values || [];
+    if (!rows.length) return 0;
+
+    let total = 0;
+
+    for (const code of codes) {
+        const row = rows.find(r => r[0] === code);
+        if (row && row[1]) {
+            total += Number(row[1]) || 0;
+        }
+    }
+
+    return total;
+}
+
 async function appendOrderToOrdersLog({
     orderId,
     source,
@@ -36,32 +59,40 @@ async function appendOrderToOrdersLog({
         timeZone: "Europe/Kyiv"
     }).replace(" ", "T");
 
-    await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: `${ORDERS_SHEET_NAME}!A:N`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-            values: [
-                [
-                    orderId,      // A: ID замовлення
-                    source,       // B: Джерело
-                    now,          // C: Дата оплати
-                    totalAmount,  // D: Сума замовлення
-                    paidAmount,   // E: Сплачено
-                    dueAmount,    // F: До оплати
-                    paymentType,  // G: Тип оплати
-                    buyerName,    // H: Імʼя клієнта
-                    buyerPhone,   // I: Телефон
-                    delivery,     // J: Доставка
-                    itemsText,    // K: Склад замовлення
-                    false,        // L: Виконано
-                    "",           // M: Дата виконання
-                    "",           // N: Примітки
-                ],
+const paidByBank = Number(paidAmount) || 0;
+const paidByCertificate = await getCertificatesTotal(
+    ORDERS.get(orderId)?.usedCertificates || []
+);
+
+const finalDueAmount =
+    Number(totalAmount || 0) - paidByBank - paidByCertificate;
+
+await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: `${ORDERS_SHEET_NAME}!A:O`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+        values: [
+            [
+                orderId,                // A
+                source,                 // B
+                now,                    // C
+                totalAmount,            // D
+                paidByBank,             // E  Сплачено банк
+                paidByCertificate,      // F  Сплачено сертифікатом
+                Math.max(finalDueAmount, 0), // G  До оплати
+                paymentType,            // H
+                buyerName,              // I
+                buyerPhone,             // J
+                delivery,               // K
+                itemsText,              // L
+                false,                  // M
+                "",                     // N
+                "",                     // O
             ],
-        },
-    });
-}
+        ],
+    },
+});
 
 /* ===================== ПОГАШЕННЯ СЕРТИФІКАТУ ===================== */
 /* ❗ НЕ ВИКЛИКАЄТЬСЯ ТУТ — БУДЕ ВИКОРИСТАНО ПРИ РЕАЛЬНОМУ ПОГАШЕННІ */
@@ -577,15 +608,19 @@ app.get("/admin/active-orders", async (req, res) => {
             source: r[1] || "",         // Джерело
             paidAt: r[2] || "",         // Дата оплати
             totalAmount: r[3] || "",    // Сума замовлення
-            paidAmount: r[4] || "",     // Сплачено
-            dueAmount: r[5] || "",      // До оплати
-            paymentType: r[6] || "",    // Тип оплати
-            buyerName: r[7] || "",      // Імʼя клієнта
-            buyerPhone: r[8] || "",     // Телефон
-            delivery: r[9] || "",       // Доставка
-            itemsText: r[10] || "",     // Склад замовлення
-            processed: (r[11] || "").toString().toLowerCase(),
-        }));
+
+            paidAmount: r[4] || "",     // Сплачено банк  (колонка перейменована)
+            paidByCertificate: r[5] || "", // Сплачено сертифікатом (нова колонка)
+
+            dueAmount: r[6] || "",      // До оплати
+            paymentType: r[7] || "",    // Тип оплати
+            buyerName: r[8] || "",      // Імʼя клієнта
+            buyerPhone: r[9] || "",     // Телефон
+            delivery: r[10] || "",      // Доставка
+            itemsText: r[11] || "",     // Склад замовлення
+
+            processed: (r[12] || "").toString().toLowerCase(),
+       }));
 
         const activeOrders = data.filter(
             (o) => o.processed !== true && o.processed !== "true"
