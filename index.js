@@ -153,6 +153,17 @@ app.post("/register-order", (req, res) => {
         });
     }
 
+    console.log("ORDER_REGISTERED", JSON.stringify({
+        orderId,
+        buyerName,
+        buyerPhone,
+        totalAmount,
+        paidAmount,
+        dueAmount,
+        paymentLabel,
+        itemsText
+    }));
+
     ORDERS.set(orderId, {
         // для Telegram
         text,
@@ -578,7 +589,7 @@ app.get("/admin/active-orders", async (req, res) => {
     try {
         const result = await sheets.spreadsheets.values.get({
             spreadsheetId: SHEET_ID,
-            range: "orders_log!A:Z",
+            range: "ORDERS_LOG!A:Z",
         });
 
         const rows = result.data.values || [];
@@ -624,7 +635,7 @@ app.post("/admin/mark-done", async (req, res) => {
 
         const result = await sheets.spreadsheets.values.get({
             spreadsheetId: SHEET_ID,
-            range: "orders_log!A:Z",
+            range: "ORDERS_LOG!A:Z",
         });
 
         const rows = result.data.values || [];
@@ -656,7 +667,7 @@ app.post("/admin/mark-done", async (req, res) => {
 
         await sheets.spreadsheets.values.update({
             spreadsheetId: SHEET_ID,
-            range: `orders_log!${String.fromCharCode(
+            range: `ORDERS_LOG!${String.fromCharCode(
                 65 + doneIndex
             )}${rowIndex + 1}:${String.fromCharCode(
                 65 + doneAtIndex
@@ -681,7 +692,7 @@ app.get("/admin/completed-orders", async (req, res) => {
     try {
         const result = await sheets.spreadsheets.values.get({
             spreadsheetId: SHEET_ID,
-            range: "orders_log!A:Z",
+            range: "ORDERS_LOG!A:Z",
         });
 
         const rows = result.data.values || [];
