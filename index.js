@@ -3,6 +3,7 @@ import cors from "cors";
 import fetch from "node-fetch";
 import { google } from "googleapis";
 import mysql from "mysql2/promise";
+import bcrypt from "bcrypt";
 
 const app = express();
 
@@ -119,18 +120,134 @@ async function markCertificateAsUsed(certCode) {
 }
 /* ===================== CONFIG ===================== */
 
-app.use(
-    cors({
-        origin: "https://monal.com.ua",
-    })
-);
+app.use(cors({
+    origin: [
+        "https://test.monal.com.ua",
+        "https://monal.com.ua"
+    ],
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"]
+}));
 
 app.use(express.json());
 
 // orderId → { text, certificates }
 const ORDERS = new Map();
 
+/* ===================== REGISTER USER ===================== */
 
+app.post("/api/register", async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+
+        if (!name || !email || !password) {
+            return res.status(400).json({ error: "missing fields" });
+        }
+
+        const [existing] = await db.query(
+            "SELECT id FROM customers WHERE email = ?",
+            [email]
+        );
+
+        if (existing.length > 0) {
+            return res.status(400).json({ error: "email exists" });
+        }
+
+        const hash = await bcrypt.hash(password, 10);
+
+        await db.query(
+            "INSERT INTO customers (name, email, password_hash, total_spent, discount) VALUES (?, ?, ?, 0, 3)",
+            [name, email, hash]
+        );
+
+        res.json({ ok: true });
+
+    } catch (e) {
+        console.error("REGISTER ERROR:", e);
+        res.status(500).json({ error: "server error" });
+    }
+});
+
+/* ===================== LOGIN USER ===================== */
+
+app.post("/api/login", async (req, res) => {
+
+    try {
+
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ error: "missing fields" });
+        }
+
+        const [rows] = await db.query(
+            "SELECT * FROM customers WHERE email = ?",
+            [email]
+        );
+
+        if (rows.length === 0) {
+            return res.status(401).json({ error: "invalid login" });
+        }
+
+        const user = rows[0];
+
+        const match = await bcrypt.compare(password, user.password_hash);
+
+        if (!match) {
+            return res.status(401).json({ error: "invalid login" });
+        }
+
+        res.json({
+            ok: true,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                discount: user.discount,
+                total_spent: user.total_spent
+            }
+        });
+
+    } catch (err) {
+
+        console.error("LOGIN ERROR:", err);
+        res.status(500).json({ error: "server error" });
+
+    }
+
+});
+
+/* ===================== GET USER DATA ===================== */
+
+app.get("/api/user/:id", async (req, res) => {
+
+    try {
+
+        const userId = Number(req.params.id);
+
+        if (!userId) {
+            return res.status(400).json({ error: "invalid user id" });
+        }
+
+        const [rows] = await db.query(
+            "SELECT id, name, email, discount, total_spent FROM customers WHERE id = ?",
+            [userId]
+        );
+
+        if (!rows.length) {
+            return res.status(404).json({ error: "user not found" });
+        }
+
+        res.json(rows[0]);
+
+    } catch (err) {
+
+        console.error("GET USER ERROR:", err);
+        res.status(500).json({ error: "server error" });
+
+    }
+
+});
 /* ===================== HEALTH ===================== */
 
 app.get("/", (req, res) => {
@@ -144,6 +261,8 @@ app.post("/register-order", (req, res) => {
     const {
         orderId,
         text,
+        userId,
+        userEmail,
         certificates,
         usedCertificates,
         certificateType,
@@ -167,6 +286,8 @@ app.post("/register-order", (req, res) => {
 
     console.log("ORDER_REGISTERED", JSON.stringify({
         orderId,
+        userId,
+        userEmail,
         buyerName,
         buyerPhone,
         totalAmount,
@@ -183,7 +304,8 @@ app.post("/register-order", (req, res) => {
         // 🔹 ДЖЕРЕЛО ЗАМОВЛЕННЯ
         source: req.body.source || "site",
         userId: req.body.userId || null,
-
+        userEmail: req.body.userEmail || null,
+        
         // для сертифікатів
         certificates: Array.isArray(certificates) ? certificates : null,
         usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
@@ -198,6 +320,10 @@ app.post("/register-order", (req, res) => {
         paidAmount: paidAmount || "",
         dueAmount: dueAmount || "",
         paymentLabel: paymentLabel || "",
+
+        personalDiscount: req.body.personalDiscount || 0,
+        promoDiscount: req.body.promoDiscount || 0,
+        certificateAmount: req.body.certificateAmount || 0,
     });
 
     res.json({ ok: true });
@@ -337,6 +463,10 @@ app.post("/mono-webhook", async (req, res) => {
     const paidByMono = Number(order.paidAmount) || 0;
     const dueAmount = Number(order.dueAmount) || 0;
 
+    const personalDiscount = Number(order.personalDiscount) || 0;
+    const promoDiscount = Number(order.promoDiscount) || 0;
+    const certAmount = Number(order.certificateAmount) || 0;
+
     // 🎟 сплачено сертифікатом
     const paidByCertificate = Math.max(
         totalAmount - paidByMono - dueAmount,
@@ -350,8 +480,14 @@ app.post("/mono-webhook", async (req, res) => {
     finalText +=
         `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
         `💰 *Сума замовлення:* ${totalAmount} грн\n` +
-        (paidByCertificate > 0
-            ? `🎟 *Сертифікатом:* ${paidByCertificate} грн\n`
+        (personalDiscount > 0
+            ? `👤 *Персональна знижка:* ${personalDiscount} грн\n`
+            : "") +
+        (promoDiscount > 0
+            ? `🏷 *Промокод:* ${promoDiscount} грн\n`
+            : "") +
+        (certAmount > 0
+            ? `🎟 *Сертифікатом:* ${certAmount} грн\n`
             : "") +
         `💳 *Через mono:* ${paidByMono} грн\n` +
         `📦 *До оплати:* ${dueAmount} грн\n\n` +
@@ -436,6 +572,104 @@ await appendOrderToOrdersLog({
     itemsText: order.itemsText || "",
 });
 
+// ===============================
+// 💾 ЗАПИС У MYSQL (ДУБЛЬ ЗАМОВЛЕННЯ)
+// ===============================
+
+try {
+
+    await db.query(
+        `INSERT INTO orders (
+            order_id,
+            user_id,
+            user_email,
+            source,
+            buyer_name,
+            buyer_phone,
+            delivery,
+            items_text,
+            total_amount,
+            paid_amount,
+            due_amount,
+            payment_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            orderId,
+            order.userId || null,
+            order.userEmail || null,
+            order.source || "site",
+            order.buyerName || "",
+            order.buyerPhone || "",
+            order.delivery || "",
+            order.itemsText || "",
+            Number(order.totalAmount || 0),
+            Number(order.paidAmount || 0),
+            Number(order.dueAmount || 0),
+            order.paymentLabel || ""
+        ]
+    );
+
+} catch (err) {
+
+    console.error("MYSQL ORDER INSERT ERROR:", err);
+
+}
+
+// ===============================
+// 👑 ОНОВЛЕННЯ НАКОПИЧЕННЯ КЛІЄНТА
+// ===============================
+
+const uid = Number(order.userId || 0);
+
+if (uid > 0) {
+
+    const loyaltyAmount =
+        Number(order.paidAmount || 0) +
+        Number(order.dueAmount || 0);
+
+    try {
+
+        // оновлюємо суму покупок
+        await db.query(
+            "UPDATE customers SET total_spent = total_spent + ? WHERE id = ?",
+            [
+                loyaltyAmount,
+                uid
+            ]
+        );
+
+        // беремо нову суму
+        const [rows] = await db.query(
+            "SELECT total_spent FROM customers WHERE id = ?",
+            [uid]
+        );
+
+        if (rows.length) {
+
+            const spent = Number(rows[0].total_spent);
+
+            let newDiscount = 3;
+
+            if (spent >= 15000) newDiscount = 15;
+            else if (spent >= 10000) newDiscount = 10;
+            else if (spent >= 8000) newDiscount = 7;
+            else if (spent >= 5000) newDiscount = 5;
+            else newDiscount = 3;
+
+            await db.query(
+                "UPDATE customers SET discount = ? WHERE id = ?",
+                [newDiscount, uid]
+            );
+
+        }
+
+    } catch (err) {
+
+        console.error("MYSQL LOYALTY UPDATE ERROR:", err);
+
+    }
+
+}
 // ===============================
 // 📩 ВІДПРАВКА АДМІНУ
 // ===============================
@@ -740,8 +974,8 @@ app.get("/admin/completed-orders", async (req, res) => {
 
 /* ===================== START ===================== */
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
     console.log("Server started on port", PORT);
 });
