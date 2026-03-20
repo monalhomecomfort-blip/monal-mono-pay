@@ -3,7 +3,6 @@ import cors from "cors";
 import fetch from "node-fetch";
 import { google } from "googleapis";
 import mysql from "mysql2/promise";
-import bcrypt from "bcrypt";
 
 const app = express();
 
