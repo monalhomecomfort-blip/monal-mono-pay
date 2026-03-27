@@ -256,30 +256,28 @@ app.get("/api/user/:id", async (req, res) => {
 /* ===================== UPDATE PROFILE ===================== */
 
 app.post("/api/update-profile", async (req, res) => {
-
-    const { userId, birthday } = req.body;
-
+    const { userId, birthday, phone, gender, address } = req.body;
     if (!userId) {
         return res.json({ ok: false });
     }
-
     try {
-
         await db.execute(
-            "UPDATE customers SET birthday = ? WHERE id = ?",
-            [birthday || null, userId]
+            `UPDATE customers
+             SET birthday = ?, phone = ?, gender = ?, address = ?
+             WHERE id = ?`,
+            [
+                birthday || null,
+                phone || null,
+                gender || null,
+                address || null,
+                userId
+            ]
         );
-
         return res.json({ ok: true });
-
     } catch (err) {
-
-        console.error(err);
-
+        console.error("UPDATE PROFILE ERROR:", err);
         return res.json({ ok: false });
-
     }
-
 });
 /* ===================== HEALTH ===================== */
 
