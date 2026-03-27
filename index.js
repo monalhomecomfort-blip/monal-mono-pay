@@ -254,24 +254,37 @@ app.get("/api/user/:id", async (req, res) => {
 });
 
 /* ===================== UPDATE PROFILE ===================== */
-
 app.post("/api/update-profile", async (req, res) => {
     const { userId, birthday, phone, gender, address } = req.body;
     if (!userId) {
         return res.json({ ok: false });
     }
     try {
+        const fields = [];
+        const values = [];
+        if (birthday !== undefined) {
+            fields.push("birthday = ?");
+            values.push(birthday || null);
+        }
+        if (phone !== undefined) {
+            fields.push("phone = ?");
+            values.push(phone || null);
+        }
+        if (gender !== undefined) {
+            fields.push("gender = ?");
+            values.push(gender || null);
+        }
+        if (address !== undefined) {
+            fields.push("address = ?");
+            values.push(address || null);
+        }
+        if (!fields.length) {
+            return res.json({ ok: false });
+        }
+        values.push(userId);
         await db.execute(
-            `UPDATE customers
-             SET birthday = ?, phone = ?, gender = ?, address = ?
-             WHERE id = ?`,
-            [
-                birthday || null,
-                phone || null,
-                gender || null,
-                address || null,
-                userId
-            ]
+            `UPDATE customers SET ${fields.join(", ")} WHERE id = ?`,
+            values
         );
         return res.json({ ok: true });
     } catch (err) {
