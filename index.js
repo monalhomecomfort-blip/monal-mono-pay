@@ -203,6 +203,7 @@ app.post("/api/login", async (req, res) => {
                 id: user.id,
                 name: user.name,
                 email: user.email,
+                phone: user.phone,
                 discount: user.discount,
                 total_spent: user.total_spent
             }
