@@ -252,6 +252,35 @@ app.get("/api/user/:id", async (req, res) => {
     }
 
 });
+
+/* ===================== UPDATE PROFILE ===================== */
+
+app.post("/api/update-profile", async (req, res) => {
+
+    const { userId, birthday } = req.body;
+
+    if (!userId) {
+        return res.json({ ok: false });
+    }
+
+    try {
+
+        await db.execute(
+            "UPDATE customers SET birthday = ? WHERE id = ?",
+            [birthday || null, userId]
+        );
+
+        return res.json({ ok: true });
+
+    } catch (err) {
+
+        console.error(err);
+
+        return res.json({ ok: false });
+
+    }
+
+});
 /* ===================== HEALTH ===================== */
 
 app.get("/", (req, res) => {
