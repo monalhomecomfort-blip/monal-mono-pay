@@ -207,6 +207,9 @@ app.post("/api/login", async (req, res) => {
                 birthday: user.birthday,
                 gender: user.gender,
                 address: user.address,
+                has_pet: user.has_pet,
+                has_car: user.has_car,
+                travels_often: user.travels_often,
                 discount: user.discount,
                 total_spent: user.total_spent
             }
@@ -255,7 +258,17 @@ app.get("/api/user/:id", async (req, res) => {
 
 /* ===================== UPDATE PROFILE ===================== */
 app.post("/api/update-profile", async (req, res) => {
-    const { userId, birthday, phone, gender, address } = req.body;
+    const {
+        userId,
+        birthday,
+        phone,
+        gender,
+        address,
+        has_pet,
+        has_car,
+        travels_often
+    } = req.body;
+
     if (!userId) {
         return res.json({ ok: false });
     }
@@ -277,6 +290,18 @@ app.post("/api/update-profile", async (req, res) => {
         if (address !== undefined) {
             fields.push("address = ?");
             values.push(address || null);
+        }
+        if (has_pet !== undefined) {
+            fields.push("has_pet = ?");
+            values.push(has_pet);
+        }
+        if (has_car !== undefined) {
+            fields.push("has_car = ?");
+            values.push(has_car);
+        }
+        if (travels_often !== undefined) {
+            fields.push("travels_often = ?");
+            values.push(travels_often);
         }
         if (!fields.length) {
             return res.json({ ok: false });
