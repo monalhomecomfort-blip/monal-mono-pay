@@ -207,6 +207,7 @@ app.post("/api/login", async (req, res) => {
                 birthday: user.birthday,
                 gender: user.gender,
                 address: user.address,
+                avatar_data: user.avatar_data,
                 has_pet: user.has_pet,
                 has_car: user.has_car,
                 travels_often: user.travels_often,
@@ -237,7 +238,7 @@ app.get("/api/user/:id", async (req, res) => {
         }
 
         const [rows] = await db.query(
-            "SELECT id, name, email, phone, birthday, gender, address, discount, total_spent FROM customers WHERE id = ?",
+            "SELECT id, name, email, phone, birthday, gender, address, avatar_data, discount, total_spent FROM customers WHERE id = ?",
             [userId]
         );
 
