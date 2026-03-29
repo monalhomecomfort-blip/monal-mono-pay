@@ -317,6 +317,39 @@ app.post("/api/update-profile", async (req, res) => {
         return res.json({ ok: false });
     }
 });
+
+/* ===================== UPDATE AVATAR ===================== */
+
+app.post("/api/update-avatar", async (req, res) => {
+    try {
+        const { userId, avatar_data } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ ok: false, error: "userId required" });
+        }
+
+        if (!avatar_data) {
+            return res.status(400).json({ ok: false, error: "avatar_data required" });
+        }
+
+        if (!avatar_data.startsWith("data:image/jpeg;base64,")) {
+            return res.status(400).json({
+                ok: false,
+                error: "Only compressed jpeg base64 is allowed"
+            });
+        }
+
+        await db.execute(
+            "UPDATE customers SET avatar_data = ? WHERE id = ?",
+            [avatar_data, userId]
+        );
+
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error("UPDATE AVATAR ERROR:", err);
+        return res.status(500).json({ ok: false, error: "server error" });
+    }
+});
 /* ===================== HEALTH ===================== */
 
 app.get("/", (req, res) => {
