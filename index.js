@@ -238,7 +238,7 @@ app.get("/api/user/:id", async (req, res) => {
         }
 
         const [rows] = await db.query(
-            "SELECT id, name, email, phone, birthday, gender, address, avatar_data, discount, total_spent FROM customers WHERE id = ?",
+            "SELECT id, name, email, phone, birthday, gender, address, avatar_data, has_pet, has_car, travels_often, discount, total_spent FROM customers WHERE id = ?",
             [userId]
         );
 
