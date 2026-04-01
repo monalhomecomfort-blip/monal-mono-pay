@@ -374,15 +374,36 @@ app.get("/api/reviews/approved", async (req, res) => {
         res.status(500).json({ ok: false, error: "server error" });
     }
 });
-/* ===================== HEALTH ===================== */
 
+/* ===================== SAVE ASSORTMENT WISH ===================== */
+app.post("/api/assortment-wishes", async (req, res) => {
+    try {
+        const { userId, wish_text } = req.body;
+        if (!userId || !wish_text) {
+            return res.status(400).json({ ok: false, error: "missing fields" });
+        }
+        const cleanText = String(wish_text).trim();
+        if (cleanText.length < 5) {
+            return res.status(400).json({ ok: false, error: "too short wish" });
+        }
+        await db.query(
+            `INSERT INTO assortment_wishes (user_id, wish_text, status)
+             VALUES (?, ?, 'new')`,
+            [userId, cleanText]
+        );
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("SAVE ASSORTMENT WISH ERROR:", err);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+/* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
 });
 
-
 /* ===================== REGISTER ORDER ===================== */
-
 app.post("/register-order", (req, res) => {
     const {
         orderId,
