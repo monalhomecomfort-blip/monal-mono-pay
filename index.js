@@ -433,6 +433,37 @@ app.get("/api/orders/:userId", async (req, res) => {
     }
 });
 
+/* ===================== GET ACTIVE PERSONAL OFFERS ===================== */
+app.get("/api/personal-offers", async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            `SELECT
+                id,
+                title,
+                offer_text,
+                offer_type,
+                promo_code,
+                min_order_amount,
+                required_category_slug,
+                required_discount_level,
+                starts_at,
+                ends_at
+             FROM personal_offers
+             WHERE is_active = 1
+               AND (starts_at IS NULL OR starts_at <= NOW())
+               AND (ends_at IS NULL OR ends_at >= NOW())
+             ORDER BY created_at DESC`
+        );
+        res.json({
+            ok: true,
+            offers: rows
+        });
+    } catch (err) {
+        console.error("GET PERSONAL OFFERS ERROR:", err);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
