@@ -351,6 +351,54 @@ app.post("/api/update-avatar", async (req, res) => {
         return res.status(500).json({ ok: false, error: "server error" });
     }
 });
+
+/* ===================== SAVE REVIEW ===================== */
+
+app.post("/api/reviews", async (req, res) => {
+
+    try {
+
+        const { userId, review_type, category_slug, review_text } = req.body;
+
+        if (!userId || !review_type || !review_text) {
+            return res.status(400).json({ ok: false, error: "missing fields" });
+        }
+
+        if (!["brand", "product"].includes(review_type)) {
+            return res.status(400).json({ ok: false, error: "invalid review type" });
+        }
+
+        if (review_type === "product" && !category_slug) {
+            return res.status(400).json({ ok: false, error: "missing category" });
+        }
+
+        const cleanText = String(review_text).trim();
+
+        if (cleanText.length < 5) {
+            return res.status(400).json({ ok: false, error: "too short review" });
+        }
+
+        await db.query(
+            `INSERT INTO reviews (user_id, review_type, category_slug, review_text, status)
+             VALUES (?, ?, ?, ?, 'pending')`,
+            [
+                userId,
+                review_type,
+                review_type === "product" ? category_slug : null,
+                cleanText
+            ]
+        );
+
+        res.json({ ok: true });
+
+    } catch (err) {
+
+        console.error("SAVE REVIEW ERROR:", err);
+        res.status(500).json({ ok: false, error: "server error" });
+
+    }
+
+});
 /* ===================== HEALTH ===================== */
 
 app.get("/", (req, res) => {
