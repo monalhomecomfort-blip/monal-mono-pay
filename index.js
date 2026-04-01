@@ -398,6 +398,41 @@ app.post("/api/assortment-wishes", async (req, res) => {
     }
 });
 
+/* ===================== GET USER ORDERS ===================== */
+app.get("/api/orders/:userId", async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        if (!userId) {
+            return res.status(400).json({ ok: false, error: "missing user id" });
+        }
+        const [rows] = await db.query(
+            `SELECT
+                id,
+                order_id,
+                buyer_name,
+                buyer_phone,
+                delivery,
+                items_text,
+                total_amount,
+                paid_amount,
+                due_amount,
+                payment_type,
+                created_at
+             FROM orders
+             WHERE user_id = ?
+             ORDER BY created_at DESC`,
+            [userId]
+        );
+        res.json({
+            ok: true,
+            orders: rows
+        });
+    } catch (err) {
+        console.error("GET USER ORDERS ERROR:", err);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
