@@ -139,29 +139,22 @@ const ORDERS = new Map();
 app.post("/api/register", async (req, res) => {
     try {
         const { name, email, password } = req.body;
-
         if (!name || !email || !password) {
             return res.status(400).json({ error: "missing fields" });
         }
-
         const [existing] = await db.query(
             "SELECT id FROM customers WHERE email = ?",
             [email]
         );
-
         if (existing.length > 0) {
             return res.status(400).json({ error: "email exists" });
         }
-
         const hash = await bcrypt.hash(password, 10);
-
         await db.query(
             "INSERT INTO customers (name, email, password_hash, total_spent, discount) VALUES (?, ?, ?, 0, 3)",
             [name, email, hash]
         );
-
         res.json({ ok: true });
-
     } catch (e) {
         console.error("REGISTER ERROR:", e);
         res.status(500).json({ error: "server error" });
@@ -169,34 +162,24 @@ app.post("/api/register", async (req, res) => {
 });
 
 /* ===================== LOGIN USER ===================== */
-
 app.post("/api/login", async (req, res) => {
-
     try {
-
         const { email, password } = req.body;
-
         if (!email || !password) {
             return res.status(400).json({ error: "missing fields" });
         }
-
         const [rows] = await db.query(
             "SELECT * FROM customers WHERE email = ?",
             [email]
         );
-
         if (rows.length === 0) {
             return res.status(401).json({ error: "invalid login" });
         }
-
         const user = rows[0];
-
         const match = await bcrypt.compare(password, user.password_hash);
-
         if (!match) {
             return res.status(401).json({ error: "invalid login" });
         }
-
         res.json({
             ok: true,
             user: {
@@ -215,46 +198,31 @@ app.post("/api/login", async (req, res) => {
                 total_spent: user.total_spent
             }
         });
-
     } catch (err) {
-
         console.error("LOGIN ERROR:", err);
         res.status(500).json({ error: "server error" });
-
     }
-
 });
 
 /* ===================== GET USER DATA ===================== */
-
 app.get("/api/user/:id", async (req, res) => {
-
     try {
-
         const userId = Number(req.params.id);
-
         if (!userId) {
             return res.status(400).json({ error: "invalid user id" });
         }
-
         const [rows] = await db.query(
             "SELECT id, name, email, phone, birthday, gender, address, avatar_data, has_pet, has_car, travels_often, discount, total_spent FROM customers WHERE id = ?",
             [userId]
         );
-
         if (!rows.length) {
             return res.status(404).json({ error: "user not found" });
         }
-
         res.json(rows[0]);
-
     } catch (err) {
-
         console.error("GET USER ERROR:", err);
         res.status(500).json({ error: "server error" });
-
     }
-
 });
 
 /* ===================== UPDATE PROFILE ===================== */
@@ -320,31 +288,25 @@ app.post("/api/update-profile", async (req, res) => {
 });
 
 /* ===================== UPDATE AVATAR ===================== */
-
 app.post("/api/update-avatar", async (req, res) => {
     try {
         const { userId, avatar_data } = req.body;
-
         if (!userId) {
             return res.status(400).json({ ok: false, error: "userId required" });
         }
-
         if (!avatar_data) {
             return res.status(400).json({ ok: false, error: "avatar_data required" });
         }
-
         if (!avatar_data.startsWith("data:image/jpeg;base64,")) {
             return res.status(400).json({
                 ok: false,
                 error: "Only compressed jpeg base64 is allowed"
             });
         }
-
         await db.execute(
             "UPDATE customers SET avatar_data = ? WHERE id = ?",
             [avatar_data, userId]
         );
-
         return res.json({ ok: true });
     } catch (err) {
         console.error("UPDATE AVATAR ERROR:", err);
@@ -353,31 +315,22 @@ app.post("/api/update-avatar", async (req, res) => {
 });
 
 /* ===================== SAVE REVIEW ===================== */
-
 app.post("/api/reviews", async (req, res) => {
-
     try {
-
         const { userId, review_type, category_slug, review_text } = req.body;
-
         if (!userId || !review_type || !review_text) {
             return res.status(400).json({ ok: false, error: "missing fields" });
         }
-
         if (!["brand", "product"].includes(review_type)) {
             return res.status(400).json({ ok: false, error: "invalid review type" });
         }
-
         if (review_type === "product" && !category_slug) {
             return res.status(400).json({ ok: false, error: "missing category" });
         }
-
         const cleanText = String(review_text).trim();
-
         if (cleanText.length < 5) {
             return res.status(400).json({ ok: false, error: "too short review" });
         }
-
         await db.query(
             `INSERT INTO reviews (user_id, review_type, category_slug, review_text, status)
              VALUES (?, ?, ?, ?, 'pending')`,
@@ -388,16 +341,38 @@ app.post("/api/reviews", async (req, res) => {
                 cleanText
             ]
         );
-
         res.json({ ok: true });
-
     } catch (err) {
-
         console.error("SAVE REVIEW ERROR:", err);
         res.status(500).json({ ok: false, error: "server error" });
-
     }
+});
 
+/* ===================== GET APPROVED REVIEWS ===================== */
+
+app.get("/api/reviews/approved", async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            `SELECT
+                r.id,
+                r.review_type,
+                r.category_slug,
+                r.review_text,
+                r.created_at,
+                c.name
+             FROM reviews r
+             JOIN customers c ON r.user_id = c.id
+             WHERE r.status = 'approved'
+             ORDER BY r.created_at DESC`
+        );
+        res.json({
+            ok: true,
+            reviews: rows
+        });
+    } catch (err) {
+        console.error("GET APPROVED REVIEWS ERROR:", err);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
 });
 /* ===================== HEALTH ===================== */
 
