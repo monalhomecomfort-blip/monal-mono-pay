@@ -489,6 +489,7 @@ app.post("/register-order", (req, res) => {
         paidAmount,
         dueAmount,
         paymentLabel,
+        orderNote,
     } = req.body;
 
     console.log("REGISTER ORDER CERTIFICATES:", certificates);
@@ -509,7 +510,8 @@ app.post("/register-order", (req, res) => {
         paidAmount,
         dueAmount,
         paymentLabel,
-        itemsText
+        itemsText,
+        orderNote
     }));
 
     ORDERS.set(orderId, {
@@ -535,7 +537,7 @@ app.post("/register-order", (req, res) => {
         paidAmount: paidAmount || "",
         dueAmount: dueAmount || "",
         paymentLabel: paymentLabel || "",
-
+        orderNote: orderNote || "",
         personalDiscount: req.body.personalDiscount || 0,
         promoDiscount: req.body.promoDiscount || 0,
         certificateAmount: req.body.certificateAmount || 0,
