@@ -662,6 +662,7 @@ app.post("/mono-webhook", async (req, res) => {
         `📞 ${order.buyerPhone || "—"}\n` +
         `📦 ${order.delivery || "—"}\n` +
         `💳 ${order.paymentLabel || "—"}\n`;
+        (order.orderNote ? `📝 *Примітка:* ${order.orderNote}\n` : "");
 
     // 🎁 Тип сертифікату (якщо є)
     if (order.certificates && order.certificates.length > 0) {
@@ -971,6 +972,7 @@ app.post("/send-free-order", async (req, res) => {
 
     const finalText =
         order.text +
+        (order.orderNote ? `\n📝 *Примітка:* ${order.orderNote}\n` : "") +
         "\n💳 *Оплата:* Сертифікат (100%)\n";
 
     // 🧾 ЗАПИС У ORDERS_LOG — ОПЛАТА СЕРТИФІКАТОМ 100%
