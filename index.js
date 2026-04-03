@@ -47,6 +47,7 @@ async function appendOrderToOrdersLog({
     buyerPhone,
     delivery,
     itemsText,
+    orderNote,
 }) {
     const now = new Date()
         .toLocaleString("sv-SE", { timeZone: "Europe/Kyiv" })
@@ -72,7 +73,7 @@ async function appendOrderToOrdersLog({
                     itemsText,   // K: Склад замовлення
                     false,       // L: Виконано
                     "",          // M: Дата виконання
-                    "",          // N: Примітки
+                    orderNote || "",        // N: Примітки
                 ],
             ],
         },
@@ -787,6 +788,7 @@ await appendOrderToOrdersLog({
     buyerPhone: order.buyerPhone || "",
     delivery: order.delivery || "",
     itemsText: order.itemsText || "",
+    orderNote: order.orderNote || "",
 });
 
 // ===============================
@@ -794,7 +796,6 @@ await appendOrderToOrdersLog({
 // ===============================
 
 try {
-
     await db.query(
         `INSERT INTO orders (
             order_id,
@@ -808,8 +809,9 @@ try {
             total_amount,
             paid_amount,
             due_amount,
-            payment_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            payment_type,
+            order_note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             orderId,
             order.userId || null,
@@ -822,14 +824,12 @@ try {
             Number(order.totalAmount || 0),
             Number(order.paidAmount || 0),
             Number(order.dueAmount || 0),
-            order.paymentLabel || ""
+            order.paymentLabel || "",
+            order.orderNote || ""
         ]
     );
-
 } catch (err) {
-
     console.error("MYSQL ORDER INSERT ERROR:", err);
-
 }
 
 // ===============================
@@ -985,6 +985,7 @@ app.post("/send-free-order", async (req, res) => {
         buyerPhone: order.buyerPhone || "",
         delivery: order.delivery || "",
         itemsText: order.itemsText || "",
+        orderNote: order.orderNote || "",
     });
 
     await fetch(
