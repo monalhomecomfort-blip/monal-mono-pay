@@ -443,6 +443,8 @@ app.get("/api/personal-offers", async (req, res) => {
                 offer_text,
                 offer_type,
                 promo_code,
+                discount_percent,
+                discount_amount,
                 min_order_amount,
                 required_category_slug,
                 required_discount_level,
