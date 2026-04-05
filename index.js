@@ -429,6 +429,11 @@ app.post("/api/assortment-wishes", async (req, res) => {
     }
 });
 
+
+
+
+
+
 /* ===================== GET USER ORDERS ===================== */
 app.get("/api/orders/:userId", async (req, res) => {
     try {
@@ -464,6 +469,45 @@ app.get("/api/orders/:userId", async (req, res) => {
     }
 });
 
+/* ===================== GET PERSONAL CERTIFICATES ===================== */
+app.get("/api/certificates/:userId", async (req, res) => {
+    try {
+        const userId = Number(req.params.userId);
+
+        if (!userId) {
+            return res.status(400).json({ ok: false, error: "invalid user id" });
+        }
+
+        const [rows] = await db.query(
+            `SELECT
+                id,
+                certificate_code,
+                nominal,
+                created_at,
+                expires_at,
+                used_at,
+                status,
+                certificate_type,
+                purchase_order_id
+             FROM certificates
+             WHERE owner_user_id = ?
+             ORDER BY created_at DESC`,
+            [userId]
+        );
+
+        const activeCertificates = rows.filter(row => row.status === "active");
+        const usedCertificates = rows.filter(row => row.status === "used");
+
+        res.json({
+            ok: true,
+            activeCertificates,
+            usedCertificates
+        });
+    } catch (err) {
+        console.error("GET USER CERTIFICATES ERROR:", err);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
 /* ===================== GET ACTIVE PERSONAL OFFERS ===================== */
 app.get("/api/personal-offers", async (req, res) => {
     try {
