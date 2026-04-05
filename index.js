@@ -78,6 +78,30 @@ async function appendOrderToOrdersLog({
             ],
         },
     });
+    await db.query(
+    `INSERT INTO certificates (
+        certificate_code,
+        owner_user_id,
+        purchase_order_id,
+        nominal,
+        created_at,
+        expires_at,
+        used_at,
+        status,
+        certificate_type
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+        certCode,
+        order.userId || null,
+        orderId,
+        Number(cert.nominal || 0),
+        createdAt,
+        expiresAt,
+        null,
+        "active",
+        order.certificateType || "електронний"
+    ]
+);
 }
 
 /* ===================== ПОГАШЕННЯ СЕРТИФІКАТУ ===================== */
