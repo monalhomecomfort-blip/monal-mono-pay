@@ -142,6 +142,12 @@ async function markCertificateAsUsed(certCode) {
             ],
         },
     });
+    await db.query(
+        `UPDATE certificates
+         SET used_at = ?, status = 'used'
+         WHERE certificate_code = ?`,
+        [new Date(now), certCode]
+    );
 }
 /* ===================== CONFIG ===================== */
 
@@ -685,7 +691,7 @@ app.post("/mono-webhook", async (req, res) => {
         `👤 ${order.buyerName || "—"}\n` +
         `📞 ${order.buyerPhone || "—"}\n` +
         `📦 ${order.delivery || "—"}\n` +
-        `💳 ${order.paymentLabel || "—"}\n`;
+        `💳 ${order.paymentLabel || "—"}\n`
         (order.orderNote ? `📝 *Примітка:* ${order.orderNote}\n` : "");
 
     // 🎁 Тип сертифікату (якщо є)
