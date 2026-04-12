@@ -942,11 +942,11 @@ if (uid > 0) {
 
             let newDiscount = 3;
 
-            if (spent >= 15000) newDiscount = 15;
-            else if (spent >= 10000) newDiscount = 10;
-            else if (spent >= 8000) newDiscount = 7;
-            else if (spent >= 5000) newDiscount = 5;
-            else newDiscount = 3;
+            if (spent >= 12000) newDiscount = 10;
+            else if (spent >= 9000) newDiscount = 7;
+            else if (spent >= 6000) newDiscount = 5;
+            else if (spent >= 3000) newDiscount = 3;
+            else newDiscount = 0;
 
             await db.query(
                 "UPDATE customers SET discount = ? WHERE id = ?",
