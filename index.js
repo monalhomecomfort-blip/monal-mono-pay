@@ -77,31 +77,7 @@ async function appendOrderToOrdersLog({
                 ],
             ],
         },
-    });
-    await db.query(
-    `INSERT INTO certificates (
-        certificate_code,
-        owner_user_id,
-        purchase_order_id,
-        nominal,
-        created_at,
-        expires_at,
-        used_at,
-        status,
-        certificate_type
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-        certCode,
-        order.userId || null,
-        orderId,
-        Number(cert.nominal || 0),
-        createdAt,
-        expiresAt,
-        null,
-        "active",
-        order.certificateType || "електронний"
-    ]
-);
+    });    
 }
 
 /* ===================== ПОГАШЕННЯ СЕРТИФІКАТУ ===================== */
@@ -735,7 +711,7 @@ app.post("/mono-webhook", async (req, res) => {
         `👤 ${order.buyerName || "—"}\n` +
         `📞 ${order.buyerPhone || "—"}\n` +
         `📦 ${order.delivery || "—"}\n` +
-        `💳 ${order.paymentLabel || "—"}\n`
+        `💳 ${order.paymentLabel || "—"}\n` +
         (order.orderNote ? `📝 *Примітка:* ${order.orderNote}\n` : "");
 
     // 🎁 Тип сертифікату (якщо є)
@@ -788,7 +764,7 @@ app.post("/mono-webhook", async (req, res) => {
 
     // ⬇️ далі у тебе йде send / логування (як було)
 
-    // ===============================
+// ===============================
 // 🎁 ГЕНЕРАЦІЯ СЕРТИФІКАТІВ
 // ===============================
 
@@ -838,6 +814,30 @@ if (
                 ],
             },
         });
+        await db.query(
+            `INSERT INTO certificates (
+                certificate_code,
+                owner_user_id,
+                purchase_order_id,
+                nominal,
+                created_at,
+                expires_at,
+                used_at,
+                status,
+                certificate_type
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                certCode,
+                order.userId || null,
+                orderId,
+                Number(cert.nominal || 0),
+                createdAt,
+                expiresAt,
+                null,
+                "active",
+                order.certificateType || "електронний"
+            ]
+        );
     }
 }
 
