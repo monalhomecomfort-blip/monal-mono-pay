@@ -158,7 +158,7 @@ app.post("/api/register", async (req, res) => {
         }
         const hash = await bcrypt.hash(password, 10);
         await db.query(
-            "INSERT INTO customers (name, email, password_hash, total_spent, discount) VALUES (?, ?, ?, 0, 0)",
+            "INSERT INTO customers (name, email, password_hash, total_spent, discount, customer_status) VALUES (?, ?, ?, 0, 0, ?)",
             [name, email, hash, "general"]
         );
         res.json({ ok: true });
@@ -488,6 +488,23 @@ app.get("/api/certificates/:userId", async (req, res) => {
 /* ===================== GET ACTIVE PERSONAL OFFERS ===================== */
 app.get("/api/personal-offers", async (req, res) => {
     try {
+        const userId = Number(req.query.userId);
+
+        if (!userId) {
+            return res.status(400).json({ ok: false, error: "invalid user id" });
+        }
+
+        const [users] = await db.query(
+            "SELECT customer_status FROM customers WHERE id = ?",
+            [userId]
+        );
+
+        if (!users.length) {
+            return res.status(404).json({ ok: false, error: "user not found" });
+        }
+
+        const customerStatus = users[0].customer_status || "general";
+
         const [rows] = await db.query(
             `SELECT
                 id,
@@ -500,14 +517,18 @@ app.get("/api/personal-offers", async (req, res) => {
                 min_order_amount,
                 required_category_slug,
                 required_discount_level,
+                customer_status,
                 starts_at,
                 ends_at
              FROM personal_offers
              WHERE is_active = 1
                AND (starts_at IS NULL OR starts_at <= NOW())
                AND (ends_at IS NULL OR ends_at >= NOW())
-             ORDER BY created_at DESC`
+               AND customer_status = ?
+             ORDER BY created_at DESC`,
+            [customerStatus]
         );
+
         res.json({
             ok: true,
             offers: rows
