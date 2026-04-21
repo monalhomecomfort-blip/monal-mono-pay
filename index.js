@@ -159,7 +159,7 @@ app.post("/api/register", async (req, res) => {
         const hash = await bcrypt.hash(password, 10);
         await db.query(
             "INSERT INTO customers (name, email, password_hash, total_spent, discount) VALUES (?, ?, ?, 0, 0)",
-            [name, email, hash]
+            [name, email, hash, "general"]
         );
         res.json({ ok: true });
     } catch (e) {
@@ -201,6 +201,7 @@ app.post("/api/login", async (req, res) => {
                 has_pet: user.has_pet,
                 has_car: user.has_car,
                 travels_often: user.travels_often,
+                customer_status: user.customer_status,
                 discount: user.discount,
                 total_spent: user.total_spent
             }
@@ -219,7 +220,7 @@ app.get("/api/user/:id", async (req, res) => {
             return res.status(400).json({ error: "invalid user id" });
         }
         const [rows] = await db.query(
-            "SELECT id, name, email, phone, birthday, gender, address, avatar_data, has_pet, has_car, travels_often, discount, total_spent FROM customers WHERE id = ?",
+            "SELECT id, name, email, phone, birthday, gender, address, avatar_data, has_pet, has_car, travels_often, customer_status, discount, total_spent FROM customers WHERE id = ?",
             [userId]
         );
         if (!rows.length) {
