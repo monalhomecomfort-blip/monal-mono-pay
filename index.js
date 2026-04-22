@@ -517,14 +517,14 @@ app.get("/api/personal-offers", async (req, res) => {
                 min_order_amount,
                 required_category_slug,
                 required_discount_level,
-                customer_status,
+                required_customer_status,
                 starts_at,
                 ends_at
              FROM personal_offers
              WHERE is_active = 1
                AND (starts_at IS NULL OR starts_at <= NOW())
                AND (ends_at IS NULL OR ends_at >= NOW())
-               AND customer_status = ?
+               AND (required_customer_status = ? OR required_customer_status = 'all')
              ORDER BY created_at DESC`,
             [customerStatus]
         );
