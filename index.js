@@ -141,6 +141,22 @@ app.use(express.json({ limit: "10mb" }));
 // orderId → { text, certificates }
 const ORDERS = new Map();
 
+function getEffectiveDiscount(customerStatus, totalSpent) {
+    const status = String(customerStatus || "general").toLowerCase();
+
+    if (status === "friends") return 15;
+    if (status === "partners") return 20;
+
+    const spent = Number(totalSpent || 0);
+
+    if (spent >= 12000) return 10;
+    if (spent >= 9000) return 7;
+    if (spent >= 6000) return 5;
+    if (spent >= 3000) return 3;
+
+    return 0;
+}
+
 /* ===================== REGISTER USER ===================== */
 
 app.post("/api/register", async (req, res) => {
@@ -202,7 +218,7 @@ app.post("/api/login", async (req, res) => {
                 has_car: user.has_car,
                 travels_often: user.travels_often,
                 customer_status: user.customer_status,
-                discount: user.discount,
+                discount: getEffectiveDiscount(user.customer_status, user.total_spent),
                 total_spent: user.total_spent
             }
         });
@@ -226,7 +242,10 @@ app.get("/api/user/:id", async (req, res) => {
         if (!rows.length) {
             return res.status(404).json({ error: "user not found" });
         }
-        res.json(rows[0]);
+        res.json({
+            ...rows[0],
+            discount: getEffectiveDiscount(rows[0].customer_status, rows[0].total_spent)
+        });      
     } catch (err) {
         console.error("GET USER ERROR:", err);
         res.status(500).json({ error: "server error" });
@@ -954,21 +973,16 @@ if (uid > 0) {
 
         // беремо нову суму
         const [rows] = await db.query(
-            "SELECT total_spent FROM customers WHERE id = ?",
+            "SELECT total_spent, customer_status FROM customers WHERE id = ?",
             [uid]
         );
 
         if (rows.length) {
 
-            const spent = Number(rows[0].total_spent);
-
-            let newDiscount = 3;
-
-            if (spent >= 12000) newDiscount = 10;
-            else if (spent >= 9000) newDiscount = 7;
-            else if (spent >= 6000) newDiscount = 5;
-            else if (spent >= 3000) newDiscount = 3;
-            else newDiscount = 0;
+            const newDiscount = getEffectiveDiscount(
+                rows[0].customer_status,
+                rows[0].total_spent
+            );
 
             await db.query(
                 "UPDATE customers SET discount = ? WHERE id = ?",
