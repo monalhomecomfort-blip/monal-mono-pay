@@ -653,6 +653,8 @@ app.post("/register-order", (req, res) => {
         text,
         userId,
         userEmail,
+        customerStatus,
+        welcomeDiscountUsed,
         certificates,
         usedCertificates,
         certificateType,
@@ -697,6 +699,8 @@ app.post("/register-order", (req, res) => {
         source: req.body.source || "site",
         userId: req.body.userId || null,
         userEmail: req.body.userEmail || null,
+        customerStatus: customerStatus || null,
+        welcomeDiscountUsed: Boolean(welcomeDiscountUsed),
         
         // для сертифікатів
         certificates: Array.isArray(certificates) ? certificates : null,
@@ -874,7 +878,13 @@ app.post("/mono-webhook", async (req, res) => {
         `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
         `💰 *Сума замовлення:* ${totalAmount} грн\n` +
         (personalDiscount > 0
-            ? `👤 *Персональна знижка:* ${personalDiscount} грн\n`
+            ? `👤 *${
+                order.userId &&
+                String(order.customerStatus || "general").toLowerCase() === "general" &&
+                !Boolean(order.welcomeDiscountUsed)
+                    ? "Welcome-знижка 10%"
+                    : "Персональна знижка"
+              }:* ${personalDiscount} грн\n`
             : "") +
         (promoDiscount > 0
             ? `🏷 *Промокод:* ${promoDiscount} грн\n`
