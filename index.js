@@ -425,11 +425,6 @@ app.post("/api/assortment-wishes", async (req, res) => {
     }
 });
 
-
-
-
-
-
 /* ===================== GET USER ORDERS ===================== */
 app.get("/api/orders/:userId", async (req, res) => {
     try {
@@ -557,6 +552,73 @@ app.get("/api/personal-offers", async (req, res) => {
         res.status(500).json({ ok: false, error: "server error" });
     }
 });
+
+/* ===================== PARTNERSHIP REQUEST ===================== */
+app.post("/api/partnership-request", async (req, res) => {
+    try {
+        const {
+            name,
+            email,
+            phone,
+            message
+        } = req.body || {};
+
+        const cleanName = String(name || "").trim();
+        const cleanEmail = String(email || "").trim();
+        const cleanPhone = String(phone || "").trim();
+        const cleanMessage = String(message || "").trim();
+
+        if (!cleanName || !cleanEmail || !cleanPhone || !cleanMessage) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        const tgText =
+            "🤝 *НОВА ЗАЯВКА НА ПАРТНЕРСТВО*\n\n" +
+            `👤 *Контактна особа:* ${cleanName}\n` +
+            `📧 *E-mail:* ${cleanEmail}\n` +
+            `📞 *Телефон:* ${cleanPhone}\n\n` +
+            `📝 *Текст пропозиції:*\n${cleanMessage}`;
+
+        const tgRes = await fetch(
+            `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    chat_id: process.env.CHAT_ID,
+                    text: tgText,
+                    parse_mode: "Markdown"
+                })
+            }
+        );
+
+        const tgData = await tgRes.json();
+
+        if (!tgRes.ok || !tgData.ok) {
+            console.error("PARTNERSHIP TG ERROR:", tgData);
+            return res.status(500).json({
+                ok: false,
+                error: "telegram send failed"
+            });
+        }
+
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error("PARTNERSHIP REQUEST ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+
+
 
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
