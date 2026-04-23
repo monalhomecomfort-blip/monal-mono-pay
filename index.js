@@ -157,6 +157,25 @@ function getEffectiveDiscount(customerStatus, totalSpent) {
     return 0;
 }
 
+async function markWelcomeDiscountUsed(userId) {
+    const uid = Number(userId || 0);
+
+    if (uid <= 0) return;
+
+    try {
+        await db.query(
+            `UPDATE customers
+             SET welcome_discount_used = 1
+             WHERE id = ?
+               AND LOWER(COALESCE(customer_status, 'general')) = 'general'
+               AND welcome_discount_used = 0`,
+            [uid]
+        );
+    } catch (err) {
+        console.error("WELCOME DISCOUNT UPDATE ERROR:", err);
+    }
+}
+
 /* ===================== REGISTER USER ===================== */
 
 app.post("/api/register", async (req, res) => {
@@ -1056,10 +1075,12 @@ if (uid > 0) {
         }
 
     } catch (err) {
-
+        
         console.error("MYSQL LOYALTY UPDATE ERROR:", err);
 
     }
+    
+    await markWelcomeDiscountUsed(uid);
 
 }
 // ===============================
@@ -1131,6 +1152,12 @@ app.post("/send-free-order", async (req, res) => {
 
     const order = ORDERS.get(orderId);
     if (!order) return res.sendStatus(404);
+
+    const uid = Number(order.userId || 0);
+
+    if (uid > 0) {
+        await markWelcomeDiscountUsed(uid);
+    }
 
     // ✅ позначаємо використаний сертифікат (якщо був)
     const certsToUse =
