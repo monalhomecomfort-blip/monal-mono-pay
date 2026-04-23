@@ -218,6 +218,7 @@ app.post("/api/login", async (req, res) => {
                 has_car: user.has_car,
                 travels_often: user.travels_often,
                 customer_status: user.customer_status,
+                welcome_discount_used: Number(user.welcome_discount_used) === 1,
                 discount: getEffectiveDiscount(user.customer_status, user.total_spent),
                 total_spent: user.total_spent
             }
@@ -236,7 +237,7 @@ app.get("/api/user/:id", async (req, res) => {
             return res.status(400).json({ error: "invalid user id" });
         }
         const [rows] = await db.query(
-            "SELECT id, name, email, phone, birthday, gender, address, avatar_data, has_pet, has_car, travels_often, customer_status, discount, total_spent FROM customers WHERE id = ?",
+            "SELECT id, name, email, phone, birthday, gender, address, avatar_data, has_pet, has_car, travels_often, customer_status, welcome_discount_used, discount, total_spent FROM customers WHERE id = ?",
             [userId]
         );
         if (!rows.length) {
@@ -244,6 +245,7 @@ app.get("/api/user/:id", async (req, res) => {
         }
         res.json({
             ...rows[0],
+            welcome_discount_used: Number(rows[0].welcome_discount_used) === 1,
             discount: getEffectiveDiscount(rows[0].customer_status, rows[0].total_spent)
         });      
     } catch (err) {
