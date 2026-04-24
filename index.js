@@ -705,6 +705,7 @@ app.post("/register-order", (req, res) => {
         userEmail,
         customerStatus,
         welcomeDiscountUsed,
+        focusProductDiscount,
         certificates,
         usedCertificates,
         certificateType,
@@ -767,6 +768,7 @@ app.post("/register-order", (req, res) => {
         dueAmount: dueAmount || "",
         paymentLabel: paymentLabel || "",
         orderNote: orderNote || "",
+        focusProductDiscount: focusProductDiscount || 0,
         personalDiscount: req.body.personalDiscount || 0,
         promoDiscount: req.body.promoDiscount || 0,
         certificateAmount: req.body.certificateAmount || 0,
@@ -910,6 +912,7 @@ app.post("/mono-webhook", async (req, res) => {
     const paidByMono = Number(order.paidAmount) || 0;
     const dueAmount = Number(order.dueAmount) || 0;
 
+    const focusProductDiscount = Number(order.focusProductDiscount) || 0;
     const personalDiscount = Number(order.personalDiscount) || 0;
     const promoDiscount = Number(order.promoDiscount) || 0;
     const certAmount = Number(order.certificateAmount) || 0;
@@ -927,6 +930,9 @@ app.post("/mono-webhook", async (req, res) => {
     finalText +=
         `\n🛒 *Товари:*\n${order.itemsText || "—"}\n\n` +
         `💰 *Сума замовлення:* ${totalAmount} грн\n` +
+        (focusProductDiscount > 0
+            ? `🌿 *Аромат дня:* ${focusProductDiscount} грн\n`
+            : "") +
         (personalDiscount > 0
             ? `👤 *${
                 order.userId &&
