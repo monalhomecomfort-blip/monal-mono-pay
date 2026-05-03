@@ -697,85 +697,122 @@ app.get("/", (req, res) => {
 });
 
 /* ===================== REGISTER ORDER ===================== */
-app.post("/register-order", (req, res) => {
-    const {
-        orderId,
-        text,
-        userId,
-        userEmail,
-        customerStatus,
-        welcomeDiscountUsed,
-        focusProductDiscount,
-        certificates,
-        usedCertificates,
-        certificateType,
-        buyerName,
-        buyerPhone,
-        delivery,
-        itemsText,
-        totalAmount,
-        paidAmount,
-        dueAmount,
-        paymentLabel,
-        orderNote,
-    } = req.body;
+app.post("/register-order", async (req, res) => {
+    try {
+        const {
+            orderId,
+            text,
+            userId,
+            userEmail,
+            customerStatus,
+            welcomeDiscountUsed,
+            focusProductDiscount,
+            certificates,
+            usedCertificates,
+            certificateType,
+            buyerName,
+            buyerPhone,
+            delivery,
+            itemsText,
+            totalAmount,
+            paidAmount,
+            dueAmount,
+            paymentLabel,
+            orderNote,
+        } = req.body;
 
-    console.log("REGISTER ORDER CERTIFICATES:", certificates);
+        console.log("REGISTER ORDER CERTIFICATES:", certificates);
 
-    if (!orderId || !text) {
-        return res.status(400).json({
-            error: "orderId або text відсутні",
+        if (!orderId || !text) {
+            return res.status(400).json({
+                error: "orderId або text відсутні",
+            });
+        }
+
+        const source = req.body.source || "site";
+        const cleanEmail = String(userEmail || "").trim().toLowerCase();
+
+        let customerDbId = null;
+        let finalUserEmail = userEmail || null;
+
+        // Для сайту userId вже є ID клієнта з MySQL
+        if (source !== "bot" && userId) {
+            customerDbId = userId;
+        }
+
+        // Для Telegram-бота userId = Telegram ID.
+        // Тому клієнта шукаємо окремо по email.
+        if (source === "bot" && cleanEmail) {
+            const [customers] = await db.query(
+                "SELECT id, email FROM customers WHERE LOWER(email) = ? LIMIT 1",
+                [cleanEmail]
+            );
+
+            if (customers.length) {
+                customerDbId = customers[0].id;
+                finalUserEmail = customers[0].email;
+            } else {
+                customerDbId = null;
+                finalUserEmail = cleanEmail;
+            }
+        }
+
+        console.log("ORDER_REGISTERED", JSON.stringify({
+            orderId,
+            source,
+            userId,
+            customerDbId,
+            userEmail: finalUserEmail,
+            buyerName,
+            buyerPhone,
+            totalAmount,
+            paidAmount,
+            dueAmount,
+            paymentLabel,
+            itemsText,
+            orderNote
+        }));
+
+        ORDERS.set(orderId, {
+            // для Telegram
+            text,
+
+            // 🔹 ДЖЕРЕЛО ЗАМОВЛЕННЯ
+            source,
+            userId: userId || null,
+            customerDbId: customerDbId || null,
+            userEmail: finalUserEmail || null,
+            customerStatus: customerStatus || null,
+            welcomeDiscountUsed: Boolean(welcomeDiscountUsed),
+
+            // для сертифікатів
+            certificates: Array.isArray(certificates) ? certificates : null,
+            usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
+            certificateType: certificateType || "електронний",
+
+            // 👇 ДАНІ ДЛЯ ORDERS_LOG
+            buyerName: buyerName || "",
+            buyerPhone: buyerPhone || "",
+            delivery: delivery || "",
+            itemsText: itemsText || "",
+            totalAmount: totalAmount || "",
+            paidAmount: paidAmount || "",
+            dueAmount: dueAmount || "",
+            paymentLabel: paymentLabel || "",
+            orderNote: orderNote || "",
+            focusProductDiscount: focusProductDiscount || 0,
+            personalDiscount: req.body.personalDiscount || 0,
+            promoDiscount: req.body.promoDiscount || 0,
+            certificateAmount: req.body.certificateAmount || 0,
         });
+
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("REGISTER ORDER ERROR:", err);
+        res.status(500).json({ error: "server error" });
     }
-
-    console.log("ORDER_REGISTERED", JSON.stringify({
-        orderId,
-        userId,
-        userEmail,
-        buyerName,
-        buyerPhone,
-        totalAmount,
-        paidAmount,
-        dueAmount,
-        paymentLabel,
-        itemsText,
-        orderNote
-    }));
-
-    ORDERS.set(orderId, {
-        // для Telegram
-        text,
-
-        // 🔹 ДЖЕРЕЛО ЗАМОВЛЕННЯ
-        source: req.body.source || "site",
-        userId: req.body.userId || null,
-        userEmail: req.body.userEmail || null,
-        customerStatus: customerStatus || null,
-        welcomeDiscountUsed: Boolean(welcomeDiscountUsed),
-        
-        // для сертифікатів
-        certificates: Array.isArray(certificates) ? certificates : null,
-        usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
-        certificateType: certificateType || "електронний",
-
-        // 👇 ДАНІ ДЛЯ ORDERS_LOG
-        buyerName: buyerName || "",
-        buyerPhone: buyerPhone || "",
-        delivery: delivery || "",
-        itemsText: itemsText || "",
-        totalAmount: totalAmount || "",
-        paidAmount: paidAmount || "",
-        dueAmount: dueAmount || "",
-        paymentLabel: paymentLabel || "",
-        orderNote: orderNote || "",
-        focusProductDiscount: focusProductDiscount || 0,
-        personalDiscount: req.body.personalDiscount || 0,
-        promoDiscount: req.body.promoDiscount || 0,
-        certificateAmount: req.body.certificateAmount || 0,
-    });
-
-    res.json({ ok: true });
 });
+   
 /* ===================== CREATE PAYMENT ===================== */
 
 app.post("/create-payment", async (req, res) => {
@@ -1018,7 +1055,7 @@ if (
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 certCode,
-                order.userId || null,
+                order.customerDbId || (order.source === "site" ? order.userId : null),
                 orderId,
                 Number(cert.nominal || 0),
                 createdAt,
@@ -1079,7 +1116,7 @@ try {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             orderId,
-            order.userId || null,
+            order.customerDbId || (order.source === "site" ? order.userId : null),
             order.userEmail || null,
             order.source || "site",
             order.buyerName || "",
@@ -1101,7 +1138,11 @@ try {
 // 👑 ОНОВЛЕННЯ НАКОПИЧЕННЯ КЛІЄНТА
 // ===============================
 
-const uid = Number(order.userId || 0);
+const uid = Number(
+    order.customerDbId ||
+    (order.source === "site" ? order.userId : 0) ||
+    0
+);
 
 if (uid > 0) {
 
@@ -1170,7 +1211,7 @@ await fetch(
 
 // 📩 СПОВІЩЕННЯ ПОКУПЦЮ В TELEGRAM-БОТІ
 
-if (order.userId) {
+if (order.source === "bot" && order.userId) {
     await fetch(
         `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
         {
@@ -1219,7 +1260,11 @@ app.post("/send-free-order", async (req, res) => {
     const order = ORDERS.get(orderId);
     if (!order) return res.sendStatus(404);
 
-    const uid = Number(order.userId || 0);
+    const uid = Number(
+        order.customerDbId ||
+        (order.source === "site" ? order.userId : 0) ||
+        0
+    );
 
     if (uid > 0) {
         await markWelcomeDiscountUsed(uid);
@@ -1245,7 +1290,7 @@ app.post("/send-free-order", async (req, res) => {
     // 🧾 ЗАПИС У ORDERS_LOG — ОПЛАТА СЕРТИФІКАТОМ 100%
     await appendOrderToOrdersLog({
         orderId: orderId,
-        source: "site",
+        source: order.source || "site",
         totalAmount: order.totalAmount || "",
         paidAmount: order.totalAmount || "",
         dueAmount: 0,
