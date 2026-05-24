@@ -178,25 +178,80 @@ async function markWelcomeDiscountUsed(userId) {
 
 /* ===================== REGISTER USER ===================== */
 
+function normalizeCustomerEmail(emailRaw) {
+    const email = String(emailRaw || "").trim().toLowerCase();
+    return email || null;
+}
+
+function normalizeCustomerPhone(phoneRaw) {
+    const raw = String(phoneRaw || "").trim();
+    if (!raw) return null;
+
+    const digits = raw.replace(/\D/g, "");
+
+    if (digits.length === 12 && digits.startsWith("38")) {
+        return digits.slice(2);
+    }
+
+    if (digits.length === 10 && digits.startsWith("0")) {
+        return digits;
+    }
+
+    return null;
+}
+
 app.post("/api/register", async (req, res) => {
     try {
-        const { name, email, password } = req.body;
-        if (!name || !email || !password) {
+        const name = String(req.body.name || "").trim();
+        const email = normalizeCustomerEmail(req.body.email);
+        const phone = normalizeCustomerPhone(req.body.phone);
+        const password = String(req.body.password || "").trim();
+
+        if (!name || !password) {
             return res.status(400).json({ error: "missing fields" });
         }
-        const [existing] = await db.query(
-            "SELECT id FROM customers WHERE email = ?",
-            [email]
-        );
-        if (existing.length > 0) {
-            return res.status(400).json({ error: "email exists" });
+
+        if (!email && !phone) {
+            return res.status(400).json({ error: "email or phone required" });
         }
+
+        if (req.body.phone && !phone) {
+            return res.status(400).json({ error: "invalid phone" });
+        }
+
+        if (email) {
+            const [existingEmail] = await db.query(
+                "SELECT id FROM customers WHERE LOWER(COALESCE(email, '')) = ? LIMIT 1",
+                [email]
+            );
+
+            if (existingEmail.length > 0) {
+                return res.status(400).json({ error: "email exists" });
+            }
+        }
+
+        if (phone) {
+            const [existingPhone] = await db.query(
+                "SELECT id FROM customers WHERE phone = ? LIMIT 1",
+                [phone]
+            );
+
+            if (existingPhone.length > 0) {
+                return res.status(400).json({ error: "phone exists" });
+            }
+        }
+
         const hash = await bcrypt.hash(password, 10);
+
         await db.query(
-            "INSERT INTO customers (name, email, password_hash, total_spent, discount, customer_status) VALUES (?, ?, ?, 0, 0, ?)",
-            [name, email, hash, "general"]
+            `INSERT INTO customers
+             (name, email, phone, password_hash, total_spent, discount, customer_status)
+             VALUES (?, ?, ?, ?, 0, 0, ?)`,
+            [name, email, phone, hash, "general"]
         );
+
         res.json({ ok: true });
+
     } catch (e) {
         console.error("REGISTER ERROR:", e);
         res.status(500).json({ error: "server error" });
