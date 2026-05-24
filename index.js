@@ -203,45 +203,172 @@ app.post("/api/register", async (req, res) => {
     }
 });
 
-/* ===================== LOGIN USER ===================== */
+/* ===================== LOGIN USER / STAFF ===================== */
+
+function buildLoginContacts(loginRaw) {
+    const raw = String(loginRaw || "").trim();
+    const lower = raw.toLowerCase();
+    const digits = raw.replace(/\D/g, "");
+
+    const phones = new Set();
+
+    if (raw) phones.add(raw);
+    if (digits) phones.add(digits);
+
+    if (digits.length === 12 && digits.startsWith("38")) {
+        const local = digits.slice(2);
+        phones.add(local);
+
+        phones.add(
+            `38(${digits.slice(2, 5)})${digits.slice(5, 8)}-${digits.slice(8, 10)}-${digits.slice(10, 12)}`
+        );
+
+        phones.add(
+            `38(${digits.slice(2, 5)}) ${digits.slice(5, 8)}-${digits.slice(8, 10)}-${digits.slice(10, 12)}`
+        );
+    }
+
+    if (digits.length === 10 && digits.startsWith("0")) {
+        const full = "38" + digits;
+        phones.add(full);
+
+        phones.add(
+            `38(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6, 8)}-${digits.slice(8, 10)}`
+        );
+
+        phones.add(
+            `38(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 8)}-${digits.slice(8, 10)}`
+        );
+    }
+
+    return {
+        raw,
+        lower,
+        phones: Array.from(phones).filter(Boolean)
+    };
+}
+
+function publicCustomer(user) {
+    return {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        birthday: user.birthday,
+        gender: user.gender,
+        address: user.address,
+        avatar_data: user.avatar_data,
+        has_pet: user.has_pet,
+        has_car: user.has_car,
+        travels_often: user.travels_often,
+        customer_status: user.customer_status,
+        welcome_discount_used: Number(user.welcome_discount_used) === 1,
+        discount: getEffectiveDiscount(user.customer_status, user.total_spent),
+        total_spent: user.total_spent
+    };
+}
+
+function publicStaff(staff) {
+    return {
+        id: staff.id,
+        name: staff.name,
+        email: staff.email,
+        phone: staff.phone,
+        role: staff.role,
+        warehouse_id: staff.warehouse_id,
+        is_active: Number(staff.is_active) === 1
+    };
+}
+
 app.post("/api/login", async (req, res) => {
     try {
-        const { email, password } = req.body;
-        if (!email || !password) {
+        const loginValue = req.body.email || req.body.login || req.body.phone;
+        const { password } = req.body;
+
+        if (!loginValue || !password) {
             return res.status(400).json({ error: "missing fields" });
         }
-        const [rows] = await db.query(
-            "SELECT * FROM customers WHERE email = ?",
-            [email]
+
+        const login = buildLoginContacts(loginValue);
+        const phonePlaceholders = login.phones.map(() => "?").join(",");
+
+        const customerSql = `
+            SELECT *
+            FROM customers
+            WHERE LOWER(COALESCE(email, '')) = ?
+               OR phone IN (${phonePlaceholders})
+            LIMIT 1
+        `;
+
+        const staffSql = `
+            SELECT *
+            FROM staff_users
+            WHERE is_active = 1
+              AND (
+                    LOWER(COALESCE(email, '')) = ?
+                    OR phone IN (${phonePlaceholders})
+              )
+            LIMIT 1
+        `;
+
+        const [customerRows] = await db.query(
+            customerSql,
+            [login.lower, ...login.phones]
         );
-        if (rows.length === 0) {
-            return res.status(401).json({ error: "invalid login" });
-        }
-        const user = rows[0];
-        const match = await bcrypt.compare(password, user.password_hash);
-        if (!match) {
-            return res.status(401).json({ error: "invalid login" });
-        }
-        res.json({
-            ok: true,
-            user: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                phone: user.phone,
-                birthday: user.birthday,
-                gender: user.gender,
-                address: user.address,
-                avatar_data: user.avatar_data,
-                has_pet: user.has_pet,
-                has_car: user.has_car,
-                travels_often: user.travels_often,
-                customer_status: user.customer_status,
-                welcome_discount_used: Number(user.welcome_discount_used) === 1,
-                discount: getEffectiveDiscount(user.customer_status, user.total_spent),
-                total_spent: user.total_spent
+
+        const [staffRows] = await db.query(
+            staffSql,
+            [login.lower, ...login.phones]
+        );
+
+        let customerUser = null;
+        let staffUser = null;
+
+        if (customerRows.length) {
+            const customer = customerRows[0];
+            const customerPasswordOk = await bcrypt.compare(password, customer.password_hash);
+
+            if (customerPasswordOk) {
+                customerUser = publicCustomer(customer);
             }
+        }
+
+        if (staffRows.length) {
+            const staff = staffRows[0];
+            const staffPasswordOk = await bcrypt.compare(password, staff.password_hash);
+
+            if (staffPasswordOk) {
+                staffUser = publicStaff(staff);
+            }
+        }
+
+        if (!customerUser && !staffUser) {
+            return res.status(401).json({ error: "invalid login" });
+        }
+
+        if (customerUser && staffUser) {
+            return res.json({
+                ok: true,
+                loginType: "both",
+                user: customerUser,
+                staff: staffUser
+            });
+        }
+
+        if (customerUser) {
+            return res.json({
+                ok: true,
+                loginType: "customer_only",
+                user: customerUser
+            });
+        }
+
+        return res.json({
+            ok: true,
+            loginType: "staff_only",
+            staff: staffUser
         });
+
     } catch (err) {
         console.error("LOGIN ERROR:", err);
         res.status(500).json({ error: "server error" });
