@@ -1133,6 +1133,62 @@ app.post("/api/staff/create-customer", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: GET PRODUCTS ===================== */
+
+app.post("/api/staff/products", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const [products] = await db.query(
+            `
+            SELECT
+                id,
+                product_key,
+                display_name,
+                price,
+                cost_price,
+                realization_price,
+                category_slug,
+                is_active
+            FROM products_catalog
+            WHERE is_active = 1
+            ORDER BY category_slug ASC, display_name ASC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            products
+        });
+
+    } catch (err) {
+        console.error("STAFF GET PRODUCTS ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
