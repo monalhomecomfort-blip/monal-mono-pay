@@ -459,6 +459,7 @@ app.get("/api/user/:id", async (req, res) => {
 app.post("/api/update-profile", async (req, res) => {
     const {
         userId,
+        email,
         birthday,
         phone,
         gender,
@@ -469,51 +470,139 @@ app.post("/api/update-profile", async (req, res) => {
     } = req.body;
 
     if (!userId) {
-        return res.json({ ok: false });
+        return res.json({ ok: false, error: "userId required" });
     }
+
     try {
         const fields = [];
         const values = [];
+
+        if (email !== undefined) {
+            const cleanEmail = normalizeCustomerEmail(email);
+
+            if (cleanEmail) {
+                const [existingEmail] = await db.query(
+                    "SELECT id FROM customers WHERE LOWER(COALESCE(email, '')) = ? AND id <> ? LIMIT 1",
+                    [cleanEmail, userId]
+                );
+
+                if (existingEmail.length > 0) {
+                    return res.status(400).json({
+                        ok: false,
+                        error: "Цей email вже використовується"
+                    });
+                }
+            }
+
+            fields.push("email = ?");
+            values.push(cleanEmail);
+        }
+
         if (birthday !== undefined) {
             fields.push("birthday = ?");
             values.push(birthday || null);
         }
+
         if (phone !== undefined) {
+            const cleanPhone = normalizeCustomerPhone(phone);
+
+            if (phone && !cleanPhone) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Некоректний номер телефону"
+                });
+            }
+
+            if (cleanPhone) {
+                const [existingPhone] = await db.query(
+                    "SELECT id FROM customers WHERE phone = ? AND id <> ? LIMIT 1",
+                    [cleanPhone, userId]
+                );
+
+                if (existingPhone.length > 0) {
+                    return res.status(400).json({
+                        ok: false,
+                        error: "Цей телефон вже використовується"
+                    });
+                }
+            }
+
             fields.push("phone = ?");
-            values.push(phone || null);
+            values.push(cleanPhone);
         }
+
         if (gender !== undefined) {
             fields.push("gender = ?");
             values.push(gender || null);
         }
+
         if (address !== undefined) {
             fields.push("address = ?");
             values.push(address || null);
         }
+
         if (has_pet !== undefined) {
             fields.push("has_pet = ?");
             values.push(has_pet);
         }
+
         if (has_car !== undefined) {
             fields.push("has_car = ?");
             values.push(has_car);
         }
+
         if (travels_often !== undefined) {
             fields.push("travels_often = ?");
             values.push(travels_often);
         }
+
         if (!fields.length) {
-            return res.json({ ok: false });
+            return res.json({ ok: false, error: "nothing to update" });
         }
+
         values.push(userId);
+
         await db.execute(
             `UPDATE customers SET ${fields.join(", ")} WHERE id = ?`,
             values
         );
+
         return res.json({ ok: true });
+
     } catch (err) {
         console.error("UPDATE PROFILE ERROR:", err);
-        return res.json({ ok: false });
+        return res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+/* ===================== CHANGE PASSWORD ===================== */
+app.post("/api/change-password", async (req, res) => {
+    try {
+        const userId = Number(req.body.userId || 0);
+        const newPassword = String(req.body.newPassword || "").trim();
+
+        if (!userId || !newPassword) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        const hash = await bcrypt.hash(newPassword, 10);
+
+        await db.execute(
+            "UPDATE customers SET password_hash = ? WHERE id = ?",
+            [hash, userId]
+        );
+
+        return res.json({ ok: true });
+
+    } catch (err) {
+        console.error("CHANGE PASSWORD ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
     }
 });
 
