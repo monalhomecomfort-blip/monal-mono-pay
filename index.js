@@ -1551,12 +1551,18 @@ app.post("/api/staff/save-stock-balances", async (req, res) => {
 
         await connection.beginTransaction();
 
+        let updatedRows = 0;
+
         for (const item of items) {
             const stockId = Number(item.stockId || 0);
+            if (!stockId) continue;
+
             const enabled = Boolean(item.enabled);
 
-            const initialQuantity = enabled
-                ? Math.max(0, Number(item.initialQuantity || 0))
+            const rawInitialQuantity = Math.max(0, Number(item.initialQuantity || 0));
+
+            const initialQuantity = enabled || rawInitialQuantity > 0
+                ? rawInitialQuantity
                 : 0;
 
             const costPrice =
@@ -1569,9 +1575,7 @@ app.post("/api/staff/save-stock-balances", async (req, res) => {
                     ? null
                     : Number(item.realizationPrice);
 
-            if (!stockId) continue;
-
-            await connection.query(
+            const [updateResult] = await connection.query(
                 `
                 UPDATE stock_balances
                 SET
@@ -1589,12 +1593,22 @@ app.post("/api/staff/save-stock-balances", async (req, res) => {
                     warehouseId
                 ]
             );
+
+            updatedRows += Number(updateResult.affectedRows || 0);
         }
 
         await connection.commit();
 
+        if (updatedRows === 0) {
+            return res.status(400).json({
+                ok: false,
+                error: "Жоден рядок не оновлено"
+            });
+        }
+
         return res.json({
-            ok: true
+            ok: true,
+            updatedRows
         });
 
     } catch (err) {
