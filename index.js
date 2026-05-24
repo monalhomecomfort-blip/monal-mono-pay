@@ -959,7 +959,85 @@ app.post("/api/partnership-request", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: SEARCH CUSTOMER ===================== */
 
+app.post("/api/staff/search-customer", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const searchValue = String(req.body.searchValue || "").trim();
+
+        if (!staffId || !searchValue) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const login = buildLoginContacts(searchValue);
+        const phonePlaceholders = login.phones.map(() => "?").join(",");
+
+        const [customers] = await db.query(
+            `
+            SELECT
+                id,
+                name,
+                email,
+                phone,
+                total_spent,
+                customer_status,
+                welcome_discount_used
+            FROM customers
+            WHERE LOWER(COALESCE(email, '')) = ?
+               OR phone IN (${phonePlaceholders})
+            LIMIT 1
+            `,
+            [login.lower, ...login.phones]
+        );
+
+        if (!customers.length) {
+            return res.json({
+                ok: true,
+                found: false
+            });
+        }
+
+        const customer = customers[0];
+
+        return res.json({
+            ok: true,
+            found: true,
+            customer: {
+                id: customer.id,
+                name: customer.name,
+                email: customer.email,
+                phone: customer.phone,
+                total_spent: customer.total_spent,
+                customer_status: customer.customer_status,
+                welcome_discount_used: Number(customer.welcome_discount_used) === 1,
+                discount: getEffectiveDiscount(customer.customer_status, customer.total_spent)
+            }
+        });
+
+    } catch (err) {
+        console.error("STAFF SEARCH CUSTOMER ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
 
 
 /* ===================== HEALTH ===================== */
