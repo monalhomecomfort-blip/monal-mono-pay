@@ -1625,6 +1625,87 @@ app.post("/api/staff/save-stock-balances", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: STOCK REPORT ===================== */
+
+app.post("/api/staff/stock-report", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const warehouseIdRaw = req.body.warehouseId;
+        const warehouseId = warehouseIdRaw ? Number(warehouseIdRaw) : null;
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        let sql = `
+            SELECT
+                warehouse_id,
+                warehouse_name,
+                product_id,
+                product_key,
+                product_display_name,
+                retail_price,
+                cost_price,
+                realization_price,
+                initial_quantity,
+                sales_quantity,
+                final_quantity
+            FROM stock_balances
+        `;
+
+        const params = [];
+
+        if (warehouseId) {
+            sql += " WHERE warehouse_id = ?";
+            params.push(warehouseId);
+        }
+
+        sql += `
+            ORDER BY
+                warehouse_id ASC,
+                product_display_name ASC
+        `;
+
+        const [items] = await db.query(sql, params);
+
+        return res.json({
+            ok: true,
+            items
+        });
+
+    } catch (err) {
+        console.error("STAFF STOCK REPORT ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
