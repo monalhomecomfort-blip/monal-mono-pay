@@ -1369,6 +1369,148 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: STOCK MANAGE ITEMS ===================== */
+
+app.post("/api/staff/stock-manage-items", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const warehouseId = Number(req.body.warehouseId || 0);
+
+        if (!staffId || !warehouseId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        const [staffRows] = await connection.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        const [warehouseRows] = await connection.query(
+            `
+            SELECT MAX(warehouse_name) AS warehouse_name
+            FROM stock_balances
+            WHERE warehouse_id = ?
+            `,
+            [warehouseId]
+        );
+
+        const warehouseName = warehouseRows[0]?.warehouse_name || "";
+
+        if (!warehouseName) {
+            return res.status(404).json({
+                ok: false,
+                error: "Склад не знайдено"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        await connection.query(
+            `
+            INSERT INTO stock_balances
+            (
+                warehouse_id,
+                warehouse_name,
+                product_id,
+                product_key,
+                product_display_name,
+                retail_price,
+                cost_price,
+                realization_price,
+                initial_quantity,
+                sales_quantity
+            )
+            SELECT
+                ?,
+                ?,
+                p.id,
+                p.product_key,
+                p.display_name,
+                p.price,
+                p.cost_price,
+                p.realization_price,
+                0,
+                0
+            FROM products_catalog p
+            WHERE p.is_active = 1
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM stock_balances sb
+                    WHERE sb.warehouse_id = ?
+                      AND sb.product_id = p.id
+              )
+            `,
+            [warehouseId, warehouseName, warehouseId]
+        );
+
+        const [items] = await connection.query(
+            `
+            SELECT
+                id,
+                warehouse_id,
+                warehouse_name,
+                product_id,
+                product_key,
+                product_display_name,
+                retail_price,
+                cost_price,
+                realization_price,
+                initial_quantity,
+                sales_quantity,
+                final_quantity
+            FROM stock_balances
+            WHERE warehouse_id = ?
+            ORDER BY product_display_name ASC
+            `,
+            [warehouseId]
+        );
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            warehouse: {
+                warehouse_id: warehouseId,
+                warehouse_name: warehouseName
+            },
+            items
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("STAFF STOCK MANAGE ITEMS ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
