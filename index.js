@@ -1511,6 +1511,106 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: SAVE STOCK BALANCES ===================== */
+
+app.post("/api/staff/save-stock-balances", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const warehouseId = Number(req.body.warehouseId || 0);
+        const items = Array.isArray(req.body.items) ? req.body.items : [];
+
+        if (!staffId || !warehouseId || !items.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        const [staffRows] = await connection.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        for (const item of items) {
+            const stockId = Number(item.stockId || 0);
+            const enabled = Boolean(item.enabled);
+
+            const initialQuantity = enabled
+                ? Math.max(0, Number(item.initialQuantity || 0))
+                : 0;
+
+            const costPrice =
+                item.costPrice === "" || item.costPrice === null || item.costPrice === undefined
+                    ? null
+                    : Number(item.costPrice);
+
+            const realizationPrice =
+                item.realizationPrice === "" || item.realizationPrice === null || item.realizationPrice === undefined
+                    ? null
+                    : Number(item.realizationPrice);
+
+            if (!stockId) continue;
+
+            await connection.query(
+                `
+                UPDATE stock_balances
+                SET
+                    cost_price = ?,
+                    realization_price = ?,
+                    initial_quantity = ?
+                WHERE id = ?
+                  AND warehouse_id = ?
+                `,
+                [
+                    costPrice,
+                    realizationPrice,
+                    initialQuantity,
+                    stockId,
+                    warehouseId
+                ]
+            );
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("STAFF SAVE STOCK BALANCES ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
