@@ -1189,6 +1189,186 @@ app.post("/api/staff/products", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: STOCK WAREHOUSES ===================== */
+
+app.post("/api/staff/stock-warehouses", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        const [warehouses] = await db.query(
+            `
+            SELECT
+                warehouse_id,
+                MAX(warehouse_name) AS warehouse_name
+            FROM stock_balances
+            GROUP BY warehouse_id
+            ORDER BY warehouse_id ASC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            warehouses
+        });
+
+    } catch (err) {
+        console.error("STAFF STOCK WAREHOUSES ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+
+/* ===================== STAFF: CREATE WAREHOUSE ===================== */
+
+app.post("/api/staff/create-warehouse", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const warehouseName = String(req.body.warehouseName || "").trim();
+
+        if (!staffId || !warehouseName) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        const [staffRows] = await connection.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        const [sameNameRows] = await connection.query(
+            `
+            SELECT warehouse_id
+            FROM stock_balances
+            WHERE LOWER(TRIM(warehouse_name)) = LOWER(TRIM(?))
+            LIMIT 1
+            `,
+            [warehouseName]
+        );
+
+        if (sameNameRows.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Склад з такою назвою вже існує"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        const [maxRows] = await connection.query(
+            "SELECT COALESCE(MAX(warehouse_id), 0) AS maxWarehouseId FROM stock_balances"
+        );
+
+        const nextWarehouseId = Number(maxRows[0].maxWarehouseId || 0) + 1;
+
+        const [insertResult] = await connection.query(
+            `
+            INSERT INTO stock_balances
+            (
+                warehouse_id,
+                warehouse_name,
+                product_id,
+                product_key,
+                product_display_name,
+                retail_price,
+                cost_price,
+                realization_price,
+                initial_quantity,
+                sales_quantity
+            )
+            SELECT
+                ?,
+                ?,
+                p.id,
+                p.product_key,
+                p.display_name,
+                p.price,
+                p.cost_price,
+                p.realization_price,
+                0,
+                0
+            FROM products_catalog p
+            WHERE p.is_active = 1
+            ORDER BY p.category_slug ASC, p.display_name ASC
+            `,
+            [nextWarehouseId, warehouseName]
+        );
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            warehouse: {
+                warehouse_id: nextWarehouseId,
+                warehouse_name: warehouseName
+            },
+            insertedRows: insertResult.affectedRows
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("STAFF CREATE WAREHOUSE ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
