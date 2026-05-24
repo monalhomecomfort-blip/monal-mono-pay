@@ -1039,6 +1039,99 @@ app.post("/api/staff/search-customer", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: CREATE CUSTOMER ===================== */
+
+app.post("/api/staff/create-customer", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const name = String(req.body.name || "").trim();
+        const email = normalizeCustomerEmail(req.body.email);
+        const phone = normalizeCustomerPhone(req.body.phone);
+
+        if (!staffId || !name || !phone) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть імʼя та телефон клієнта"
+            });
+        }
+
+        if (req.body.phone && !phone) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректний номер телефону"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        if (email) {
+            const [existingEmail] = await db.query(
+                "SELECT id FROM customers WHERE LOWER(COALESCE(email, '')) = ? LIMIT 1",
+                [email]
+            );
+
+            if (existingEmail.length > 0) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Цей email вже використовується"
+                });
+            }
+        }
+
+        const [existingPhone] = await db.query(
+            "SELECT id FROM customers WHERE phone = ? LIMIT 1",
+            [phone]
+        );
+
+        if (existingPhone.length > 0) {
+            return res.status(400).json({
+                ok: false,
+                error: "Цей телефон вже використовується"
+            });
+        }
+
+        const tempPassword = phone.slice(-4);
+        const hash = await bcrypt.hash(tempPassword, 10);
+
+        const [result] = await db.query(
+            `INSERT INTO customers
+             (name, email, phone, password_hash, total_spent, discount, customer_status)
+             VALUES (?, ?, ?, ?, 0, 0, ?)`,
+            [name, email, phone, hash, "general"]
+        );
+
+        return res.json({
+            ok: true,
+            customer: {
+                id: result.insertId,
+                name,
+                email,
+                phone,
+                total_spent: 0,
+                customer_status: "general",
+                discount: 0
+            },
+            tempPassword
+        });
+
+    } catch (err) {
+        console.error("STAFF CREATE CUSTOMER ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
 
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
