@@ -1754,6 +1754,83 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: STOCK MOVEMENT ACTS ARCHIVE ===================== */
+
+app.post("/api/staff/stock-movement-acts", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const warehouseIdRaw = req.body.warehouseId;
+        const warehouseId = warehouseIdRaw ? Number(warehouseIdRaw) : null;
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        let sql = `
+            SELECT
+                document_number,
+                warehouse_id,
+                MAX(warehouse_name) AS warehouse_name,
+                MIN(created_at) AS created_at,
+                MAX(created_by_name) AS created_by_name,
+                COUNT(*) AS items_count,
+                SUM(quantity) AS total_quantity,
+                SUM(quantity * COALESCE(realization_price, retail_price, 0)) AS total_amount
+            FROM stock_movements
+        `;
+
+        const params = [];
+
+        if (warehouseId) {
+            sql += " WHERE warehouse_id = ?";
+            params.push(warehouseId);
+        }
+
+        sql += `
+            GROUP BY document_number, warehouse_id
+            ORDER BY created_at DESC
+        `;
+
+        const [acts] = await db.query(sql, params);
+
+        return res.json({
+            ok: true,
+            acts
+        });
+
+    } catch (err) {
+        console.error("STAFF STOCK MOVEMENT ACTS ARCHIVE ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: STOCK ACT ===================== */
 
 app.post("/api/staff/stock-act", async (req, res) => {
