@@ -1511,17 +1511,17 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
     }
 });
 
-/* ===================== STAFF: SAVE STOCK BALANCES ===================== */
+/* ===================== STAFF: RECORD STOCK MOVEMENT ===================== */
 
-app.post("/api/staff/save-stock-balances", async (req, res) => {
+app.post("/api/staff/record-stock-movement", async (req, res) => {
     const connection = await db.getConnection();
 
     try {
         const staffId = Number(req.body.staffId || 0);
         const warehouseId = Number(req.body.warehouseId || 0);
-        const items = Array.isArray(req.body.items) ? req.body.items : [];
+        const itemsRaw = Array.isArray(req.body.items) ? req.body.items : [];
 
-        if (!staffId || !warehouseId || !items.length) {
+        if (!staffId || !warehouseId || !itemsRaw.length) {
             return res.status(400).json({
                 ok: false,
                 error: "missing fields"
@@ -1529,7 +1529,7 @@ app.post("/api/staff/save-stock-balances", async (req, res) => {
         }
 
         const [staffRows] = await connection.query(
-            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            "SELECT id, name, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
             [staffId]
         );
 
@@ -1549,72 +1549,148 @@ app.post("/api/staff/save-stock-balances", async (req, res) => {
             });
         }
 
+        const items = itemsRaw
+            .map(item => ({
+                stockId: Number(item.stockId || 0),
+                enabled: Boolean(item.enabled),
+                quantity: Math.max(0, Number(item.quantity || 0)),
+                costPrice:
+                    item.costPrice === "" || item.costPrice === null || item.costPrice === undefined
+                        ? null
+                        : Number(item.costPrice),
+                realizationPrice:
+                    item.realizationPrice === "" || item.realizationPrice === null || item.realizationPrice === undefined
+                        ? null
+                        : Number(item.realizationPrice)
+            }))
+            .filter(item => item.stockId && item.enabled && item.quantity > 0);
+
+        if (!items.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть товари і вкажіть кількість переміщення"
+            });
+        }
+
         await connection.beginTransaction();
 
-        let updatedRows = 0;
+        const documentNumber = "MOV-" + Date.now();
+        let insertedRows = 0;
 
         for (const item of items) {
-            const stockId = Number(item.stockId || 0);
-            if (!stockId) continue;
+            const [stockRows] = await connection.query(
+                `
+                SELECT
+                    id,
+                    warehouse_id,
+                    warehouse_name,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    retail_price,
+                    cost_price,
+                    realization_price
+                FROM stock_balances
+                WHERE id = ?
+                  AND warehouse_id = ?
+                LIMIT 1
+                `,
+                [item.stockId, warehouseId]
+            );
 
-            const enabled = Boolean(item.enabled);
+            if (!stockRows.length) {
+                continue;
+            }
 
-            const rawInitialQuantity = Math.max(0, Number(item.initialQuantity || 0));
+            const stock = stockRows[0];
 
-            const initialQuantity = enabled || rawInitialQuantity > 0
-                ? rawInitialQuantity
-                : 0;
+            const finalCostPrice =
+                item.costPrice === null ? stock.cost_price : item.costPrice;
 
-            const costPrice =
-                item.costPrice === "" || item.costPrice === null || item.costPrice === undefined
-                    ? null
-                    : Number(item.costPrice);
+            const finalRealizationPrice =
+                item.realizationPrice === null ? stock.realization_price : item.realizationPrice;
 
-            const realizationPrice =
-                item.realizationPrice === "" || item.realizationPrice === null || item.realizationPrice === undefined
-                    ? null
-                    : Number(item.realizationPrice);
-
-            const [updateResult] = await connection.query(
+            await connection.query(
                 `
                 UPDATE stock_balances
                 SET
                     cost_price = ?,
                     realization_price = ?,
-                    initial_quantity = ?
+                    initial_quantity = initial_quantity + ?
                 WHERE id = ?
                   AND warehouse_id = ?
                 `,
                 [
-                    costPrice,
-                    realizationPrice,
-                    initialQuantity,
-                    stockId,
+                    finalCostPrice,
+                    finalRealizationPrice,
+                    item.quantity,
+                    stock.id,
                     warehouseId
                 ]
             );
 
-            updatedRows += Number(updateResult.affectedRows || 0);
+            await connection.query(
+                `
+                INSERT INTO stock_movements
+                (
+                    document_number,
+                    movement_type,
+                    warehouse_id,
+                    warehouse_name,
+                    stock_balance_id,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    quantity,
+                    retail_price,
+                    cost_price,
+                    realization_price,
+                    created_by_staff_id,
+                    created_by_name
+                )
+                VALUES (?, 'transfer_in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `,
+                [
+                    documentNumber,
+                    stock.warehouse_id,
+                    stock.warehouse_name,
+                    stock.id,
+                    stock.product_id,
+                    stock.product_key,
+                    stock.product_display_name,
+                    item.quantity,
+                    stock.retail_price,
+                    finalCostPrice,
+                    finalRealizationPrice,
+                    staff.id,
+                    staff.name
+                ]
+            );
+
+            insertedRows++;
+        }
+
+        if (!insertedRows) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Жоден товар не записано"
+            });
         }
 
         await connection.commit();
 
-        if (updatedRows === 0) {
-            return res.status(400).json({
-                ok: false,
-                error: "Жоден рядок не оновлено"
-            });
-        }
-
         return res.json({
             ok: true,
-            updatedRows
+            documentNumber,
+            insertedRows
         });
 
     } catch (err) {
         await connection.rollback();
 
-        console.error("STAFF SAVE STOCK BALANCES ERROR:", err);
+        console.error("STAFF RECORD STOCK MOVEMENT ERROR:", err);
         return res.status(500).json({
             ok: false,
             error: "server error"
