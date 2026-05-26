@@ -1264,7 +1264,9 @@ app.post("/api/staff/stock-warehouses", async (req, res) => {
                 warehouse_id,
                 MAX(warehouse_name) AS warehouse_name,
                 MAX(supplier_details) AS supplier_details,
-                MAX(buyer_details) AS buyer_details
+                MAX(buyer_details) AS buyer_details,
+                MAX(document_basis) AS document_basis,
+                MAX(act_city) AS act_city
             FROM stock_balances
             GROUP BY warehouse_id
             ORDER BY warehouse_id ASC
@@ -1295,7 +1297,9 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
         const warehouseName = String(req.body.warehouseName || "").trim();
         const supplierDetails = String(req.body.supplierDetails || "").trim() || null;
         const buyerDetails = String(req.body.buyerDetails || "").trim() || null;
-
+        const documentBasis = String(req.body.documentBasis || "").trim() || null;
+        const actCity = String(req.body.actCity || "").trim() || null;
+        
         if (!staffId || !warehouseName) {
             return res.status(400).json({
                 ok: false,
@@ -1357,6 +1361,8 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
                 warehouse_name,
                 supplier_details,
                 buyer_details,
+                document_basis,
+                act_city,
                 product_id,
                 product_key,
                 product_display_name,
@@ -1367,6 +1373,8 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
                 sales_quantity
             )
             SELECT
+                ?,
+                ?,
                 ?,
                 ?,
                 ?,
@@ -1383,7 +1391,7 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
             WHERE p.is_active = 1
             ORDER BY p.category_slug ASC, p.display_name ASC
             `,
-            [nextWarehouseId, warehouseName, supplierDetails, buyerDetails]
+            [nextWarehouseId, warehouseName, supplierDetails, buyerDetails, documentBasis, actCity]
         );
 
         await connection.commit();
@@ -1394,7 +1402,9 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
                 warehouse_id: nextWarehouseId,
                 warehouse_name: warehouseName,
                 supplier_details: supplierDetails,
-                buyer_details: buyerDetails
+                buyer_details: buyerDetails,
+                document_basis: documentBasis,
+                act_city: actCity
             },
             insertedRows: insertResult.affectedRows
         });
