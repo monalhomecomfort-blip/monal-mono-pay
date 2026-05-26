@@ -1262,7 +1262,9 @@ app.post("/api/staff/stock-warehouses", async (req, res) => {
             `
             SELECT
                 warehouse_id,
-                MAX(warehouse_name) AS warehouse_name
+                MAX(warehouse_name) AS warehouse_name,
+                MAX(supplier_details) AS supplier_details,
+                MAX(buyer_details) AS buyer_details
             FROM stock_balances
             GROUP BY warehouse_id
             ORDER BY warehouse_id ASC
@@ -1282,7 +1284,6 @@ app.post("/api/staff/stock-warehouses", async (req, res) => {
         });
     }
 });
-
 
 /* ===================== STAFF: CREATE WAREHOUSE ===================== */
 
