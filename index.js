@@ -1754,6 +1754,122 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: STOCK ACT ===================== */
+
+app.post("/api/staff/stock-act", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const documentNumber = String(req.body.documentNumber || "").trim();
+
+        if (!staffId || !documentNumber) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        const [docRows] = await db.query(
+            `
+            SELECT
+                document_number,
+                movement_type,
+                warehouse_id,
+                MAX(warehouse_name) AS warehouse_name,
+                MIN(created_at) AS created_at,
+                MAX(created_by_name) AS created_by_name
+            FROM stock_movements
+            WHERE document_number = ?
+            GROUP BY document_number, movement_type, warehouse_id
+            LIMIT 1
+            `,
+            [documentNumber]
+        );
+
+        if (!docRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Акт не знайдено"
+            });
+        }
+
+        const doc = docRows[0];
+
+        const [warehouseRows] = await db.query(
+            `
+            SELECT
+                MAX(supplier_details) AS supplier_details,
+                MAX(buyer_details) AS buyer_details,
+                MAX(document_basis) AS document_basis,
+                MAX(act_city) AS act_city
+            FROM stock_balances
+            WHERE warehouse_id = ?
+            `,
+            [doc.warehouse_id]
+        );
+
+        const warehouseDetails = warehouseRows[0] || {};
+
+        const [items] = await db.query(
+            `
+            SELECT
+                product_display_name,
+                quantity,
+                retail_price,
+                cost_price,
+                realization_price
+            FROM stock_movements
+            WHERE document_number = ?
+            ORDER BY product_display_name ASC
+            `,
+            [documentNumber]
+        );
+
+        return res.json({
+            ok: true,
+            act: {
+                document_number: doc.document_number,
+                warehouse_id: doc.warehouse_id,
+                warehouse_name: doc.warehouse_name,
+                created_at: doc.created_at,
+                created_by_name: doc.created_by_name,
+                supplier_details: warehouseDetails.supplier_details || "",
+                buyer_details: warehouseDetails.buyer_details || "",
+                document_basis: warehouseDetails.document_basis || "",
+                act_city: warehouseDetails.act_city || ""
+            },
+            items
+        });
+
+    } catch (err) {
+        console.error("STAFF STOCK ACT ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: STOCK REPORT ===================== */
 
 app.post("/api/staff/stock-report", async (req, res) => {
