@@ -793,50 +793,85 @@ app.get("/api/certificates/:userId", async (req, res) => {
 });
 
 /* ===================== GET ACTIVE PUBLIC PROMO CAMPAIGNS ===================== */
+
+let PUBLIC_PROMO_CAMPAIGNS_CACHE = {
+    expiresAt: 0,
+    campaigns: []
+};
+
 app.get("/api/public-promo-campaigns", async (req, res) => {
     try {
-        const [rows] = await db.query(
-            `SELECT
-                c.id,
-                c.title,
-                c.promo_type,
-                c.discount_percent,
-                c.focus_product_id,
-                c.starts_at,
-                c.ends_at,
-                c.is_active,
-                c.audience,
-                c.exclude_certificates,
-                c.exclude_from_personal_discount,
-                c.combinable,
-                c.target_apply_limit,
-                c.target_selection,
-                c.priority,
+        const now = Date.now();
 
-                p.product_key,
-                p.product_name,
-                p.product_label,
-                p.category_slug,
-                p.price,
-                p.display_name
-             FROM promo_campaigns c
-             LEFT JOIN products_catalog p
-                ON p.id = c.focus_product_id
-             WHERE c.is_active = 1
-               AND c.audience = 'public'
-               AND c.starts_at <= NOW()
-               AND c.ends_at >= NOW()
-             ORDER BY c.priority ASC, c.id DESC`
-        );
+        if (PUBLIC_PROMO_CAMPAIGNS_CACHE.expiresAt > now) {
+            return res.json({
+                ok: true,
+                campaigns: PUBLIC_PROMO_CAMPAIGNS_CACHE.campaigns
+            });
+        }
 
-        res.json({
+        const [rows] = await db.query({
+            sql: `
+                SELECT
+                    c.id,
+                    c.title,
+                    c.promo_type,
+                    c.discount_percent,
+                    c.focus_product_id,
+                    c.starts_at,
+                    c.ends_at,
+                    c.is_active,
+                    c.audience,
+                    c.exclude_certificates,
+                    c.exclude_from_personal_discount,
+                    c.combinable,
+                    c.target_apply_limit,
+                    c.target_selection,
+                    c.priority,
+
+                    p.product_key,
+                    p.product_name,
+                    p.product_label,
+                    p.category_slug,
+                    p.price,
+                    p.display_name
+                FROM promo_campaigns c
+                LEFT JOIN products_catalog p
+                    ON p.id = c.focus_product_id
+                WHERE c.is_active = 1
+                  AND c.audience = 'public'
+                  AND (c.starts_at IS NULL OR c.starts_at <= NOW())
+                  AND (c.ends_at IS NULL OR c.ends_at >= NOW())
+                ORDER BY c.priority ASC, c.id DESC
+                LIMIT 10
+            `,
+            timeout: 5000
+        });
+
+        PUBLIC_PROMO_CAMPAIGNS_CACHE = {
+            expiresAt: now + 60 * 1000,
+            campaigns: rows
+        };
+
+        return res.json({
             ok: true,
             campaigns: rows
         });
+
     } catch (err) {
-        console.error("GET PUBLIC PROMO CAMPAIGNS ERROR:", err);
-        res.status(500).json({
-            ok: false,
+        console.error("GET PUBLIC PROMO CAMPAIGNS ERROR:", {
+            message: err.message,
+            code: err.code,
+            errno: err.errno
+        });
+
+        PUBLIC_PROMO_CAMPAIGNS_CACHE = {
+            expiresAt: Date.now() + 60 * 1000,
+            campaigns: []
+        };
+
+        return res.json({
+            ok: true,
             campaigns: []
         });
     }
