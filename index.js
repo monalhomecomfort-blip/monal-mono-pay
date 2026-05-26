@@ -1293,6 +1293,8 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
         const warehouseName = String(req.body.warehouseName || "").trim();
+        const supplierDetails = String(req.body.supplierDetails || "").trim() || null;
+        const buyerDetails = String(req.body.buyerDetails || "").trim() || null;
 
         if (!staffId || !warehouseName) {
             return res.status(400).json({
@@ -1353,6 +1355,8 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
             (
                 warehouse_id,
                 warehouse_name,
+                supplier_details,
+                buyer_details,
                 product_id,
                 product_key,
                 product_display_name,
@@ -1363,6 +1367,8 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
                 sales_quantity
             )
             SELECT
+                ?,
+                ?,
                 ?,
                 ?,
                 p.id,
@@ -1377,7 +1383,7 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
             WHERE p.is_active = 1
             ORDER BY p.category_slug ASC, p.display_name ASC
             `,
-            [nextWarehouseId, warehouseName]
+            [nextWarehouseId, warehouseName, supplierDetails, buyerDetails]
         );
 
         await connection.commit();
@@ -1386,7 +1392,9 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
             ok: true,
             warehouse: {
                 warehouse_id: nextWarehouseId,
-                warehouse_name: warehouseName
+                warehouse_name: warehouseName,
+                supplier_details: supplierDetails,
+                buyer_details: buyerDetails
             },
             insertedRows: insertResult.affectedRows
         });
@@ -1404,7 +1412,6 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
         connection.release();
     }
 });
-
 /* ===================== STAFF: STOCK MANAGE ITEMS ===================== */
 
 app.post("/api/staff/stock-manage-items", async (req, res) => {
