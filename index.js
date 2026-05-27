@@ -2227,6 +2227,29 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
         const documentNumber = "MOV-" + Date.now();
         let insertedRows = 0;
 
+        const [productionRows] = await connection.query(
+            `
+            SELECT
+                warehouse_id,
+                MAX(warehouse_name) AS warehouse_name
+            FROM stock_balances
+            WHERE is_production_source = 1
+            GROUP BY warehouse_id
+            LIMIT 1
+            `
+        );
+
+        const productionWarehouseId = Number(productionRows[0]?.warehouse_id || 0);
+
+        if (!productionWarehouseId) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Не знайдено склад виробництва"
+            });
+        }
+
         for (const item of items) {
             const [stockRows] = await connection.query(
                 `
@@ -2234,6 +2257,7 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
                     id,
                     warehouse_id,
                     warehouse_name,
+                    is_production_source,
                     product_id,
                     product_key,
                     product_display_name,
@@ -2278,6 +2302,43 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
                     warehouseId
                 ]
             );
+
+            if (Number(stock.warehouse_id) !== productionWarehouseId) {
+                const [productionStockRows] = await connection.query(
+                    `
+                    SELECT id
+                    FROM stock_balances
+                    WHERE warehouse_id = ?
+                      AND product_id = ?
+                    LIMIT 1
+                    FOR UPDATE
+                    `,
+                    [productionWarehouseId, stock.product_id]
+                );
+
+                if (!productionStockRows.length) {
+                    await connection.rollback();
+
+                    return res.status(400).json({
+                        ok: false,
+                        error: `Товар "${stock.product_display_name}" не знайдено на складі виробництва`
+                    });
+                }
+
+                await connection.query(
+                    `
+                    UPDATE stock_balances
+                    SET transfer_out_quantity = transfer_out_quantity + ?
+                    WHERE id = ?
+                      AND warehouse_id = ?
+                    `,
+                    [
+                        item.quantity,
+                        productionStockRows[0].id,
+                        productionWarehouseId
+                    ]
+                );
+            }
 
             await connection.query(
                 `
