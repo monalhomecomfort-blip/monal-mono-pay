@@ -1266,11 +1266,12 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const quantity = Number(req.body.quantity || 0);
         const paymentType = String(req.body.paymentType || "").trim();
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
+        const allowOutOfStock = Boolean(req.body.allowOutOfStock);
 
-        if (!staffId || !customerId || !productId || !quantity || !paymentType) {
+        if (!staffId || !productId || !quantity || !paymentType) {
             return res.status(400).json({
                 ok: false,
-                error: "Заповніть клієнта, товар, кількість і тип оплати"
+                error: "Заповніть товар, кількість і тип оплати"
             });
         }
 
@@ -1325,30 +1326,34 @@ app.post("/api/staff/create-sale", async (req, res) => {
             });
         }
 
-        const [customerRows] = await connection.query(
-            `
-            SELECT
-                id,
-                name,
-                email,
-                phone,
-                total_spent,
-                customer_status
-            FROM customers
-            WHERE id = ?
-            LIMIT 1
-            `,
-            [customerId]
-        );
+        let customer = null;
 
-        if (!customerRows.length) {
-            return res.status(404).json({
-                ok: false,
-                error: "Клієнта не знайдено"
-            });
+        if (customerId) {
+            const [customerRows] = await connection.query(
+                `
+                SELECT
+                    id,
+                    name,
+                    email,
+                    phone,
+                    total_spent,
+                    customer_status
+                FROM customers
+                WHERE id = ?
+                LIMIT 1
+                `,
+                [customerId]
+            );
+
+            if (!customerRows.length) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Клієнта не знайдено"
+                });
+            }
+
+            customer = customerRows[0];
         }
-
-        const customer = customerRows[0];
 
         await connection.beginTransaction();
 
@@ -1388,12 +1393,15 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const stock = stockRows[0];
         const currentBalance = Number(stock.final_quantity || 0);
 
-        if (currentBalance < quantity) {
+        if (currentBalance < quantity && !allowOutOfStock) {
             await connection.rollback();
 
             return res.status(400).json({
                 ok: false,
-                error: `Недостатньо залишку. Доступно: ${currentBalance}`
+                code: "out_of_stock_confirm_required",
+                currentBalance,
+                requestedQuantity: quantity,
+                error: `Товару на залишку ${currentBalance}. Провести продаж?`
             });
         }
 
@@ -1446,11 +1454,11 @@ app.post("/api/staff/create-sale", async (req, res) => {
             `,
             [
                 orderId,
-                customer.id,
-                customer.email || null,
+                customer ? customer.id : null,
+                customer ? (customer.email || null) : null,
                 "staff",
-                customer.name || "",
-                customer.phone || "",
+                customer ? (customer.name || "") : "Продаж без клієнта",
+                customer ? (customer.phone || "") : "",
                 stock.warehouse_name || "",
                 itemsText,
                 totalAmount,
@@ -1461,19 +1469,21 @@ app.post("/api/staff/create-sale", async (req, res) => {
             ]
         );
 
-        const newTotalSpent = Number(customer.total_spent || 0) + totalAmount;
-        const newDiscount = getEffectiveDiscount(customer.customer_status, newTotalSpent);
+        if (customer) {
+            const newTotalSpent = Number(customer.total_spent || 0) + totalAmount;
+            const newDiscount = getEffectiveDiscount(customer.customer_status, newTotalSpent);
 
-        await connection.query(
-            `
-            UPDATE customers
-            SET
-                total_spent = ?,
-                discount = ?
-            WHERE id = ?
-            `,
-            [newTotalSpent, newDiscount, customer.id]
-        );
+            await connection.query(
+                `
+                UPDATE customers
+                SET
+                    total_spent = ?,
+                    discount = ?
+                WHERE id = ?
+                `,
+                [newTotalSpent, newDiscount, customer.id]
+            );
+        }
 
         await connection.commit();
 
@@ -1488,9 +1498,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 unitPrice,
                 totalAmount,
                 paymentLabel,
-                customerName: customer.name,
+                customerName: customer ? customer.name : "Без клієнта",
                 stockBefore: currentBalance,
-                stockAfter: currentBalance - quantity
+                stockAfter: currentBalance - quantity,
+                outOfStockAllowed: currentBalance < quantity
             }
         });
 
