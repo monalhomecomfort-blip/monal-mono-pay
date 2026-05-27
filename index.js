@@ -1254,6 +1254,153 @@ app.post("/api/staff/products", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: CHECK CERTIFICATE ===================== */
+
+app.post("/api/staff/check-certificate", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const code = String(req.body.code || "").trim().toUpperCase();
+
+        if (!staffId || !code) {
+            return res.status(400).json({
+                ok: false,
+                valid: false,
+                error: "missing fields"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                valid: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (!["admin", "manager", "partner"].includes(staff.role)) {
+            return res.status(403).json({
+                ok: false,
+                valid: false,
+                error: "Недостатньо прав"
+            });
+        }
+
+        const sheetResult = await sheets.spreadsheets.values.get({
+            spreadsheetId: SHEET_ID,
+            range: `${SHEET_NAME}!A:H`,
+        });
+
+        const sheetRows = sheetResult.data.values || [];
+        const sheetRow = sheetRows.find(row =>
+            String(row[0] || "").trim().toUpperCase() === code
+        );
+
+        if (!sheetRow) {
+            return res.json({
+                ok: true,
+                valid: false,
+                reason: "not_found_in_google",
+                message: "Сертифікат не знайдено в Google таблиці"
+            });
+        }
+
+        const sheetNominal = Number(sheetRow[1] || 0);
+        const sheetExpiresAt = sheetRow[3] || null;
+        const sheetStatus = String(sheetRow[6] || "").trim().toLowerCase();
+
+        const [dbRows] = await db.query(
+            `
+            SELECT
+                certificate_code,
+                nominal,
+                expires_at,
+                used_at,
+                status
+            FROM certificates
+            WHERE UPPER(certificate_code) = ?
+            LIMIT 1
+            `,
+            [code]
+        );
+
+        if (!dbRows.length) {
+            return res.json({
+                ok: true,
+                valid: false,
+                reason: "not_found_in_db",
+                message: "Сертифікат не знайдено в БД"
+            });
+        }
+
+        const dbCert = dbRows[0];
+        const dbStatus = String(dbCert.status || "").trim().toLowerCase();
+
+        if (sheetStatus !== "active" || dbStatus !== "active") {
+            return res.json({
+                ok: true,
+                valid: false,
+                reason: "used_or_inactive",
+                message: "Сертифікат вже використаний або неактивний"
+            });
+        }
+
+        const now = new Date();
+
+        if (sheetExpiresAt && new Date(sheetExpiresAt) < now) {
+            return res.json({
+                ok: true,
+                valid: false,
+                reason: "expired_google",
+                message: "Сертифікат прострочений у Google таблиці"
+            });
+        }
+
+        if (dbCert.expires_at && new Date(dbCert.expires_at) < now) {
+            return res.json({
+                ok: true,
+                valid: false,
+                reason: "expired_db",
+                message: "Сертифікат прострочений у БД"
+            });
+        }
+
+        const dbNominal = Number(dbCert.nominal || 0);
+        const nominal = dbNominal || sheetNominal;
+
+        if (!nominal || nominal <= 0) {
+            return res.json({
+                ok: true,
+                valid: false,
+                reason: "invalid_nominal",
+                message: "Некоректний номінал сертифіката"
+            });
+        }
+
+        return res.json({
+            ok: true,
+            valid: true,
+            code,
+            nominal
+        });
+
+    } catch (err) {
+        console.error("STAFF CHECK CERTIFICATE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            valid: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: CREATE SALE ===================== */
 
 app.post("/api/staff/create-sale", async (req, res) => {
