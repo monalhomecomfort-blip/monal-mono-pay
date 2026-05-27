@@ -810,6 +810,35 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
             });
         }
 
+        // 1) Легка перевірка: чи є активна public-кампанія.
+        // Якщо нема — не чіпаємо products_catalog.
+        const [activeRows] = await db.query({
+            sql: `
+                SELECT id
+                FROM promo_campaigns
+                WHERE is_active = 1
+                  AND audience = 'public'
+                  AND (starts_at IS NULL OR starts_at <= NOW())
+                  AND (ends_at IS NULL OR ends_at >= NOW())
+                ORDER BY priority ASC, id DESC
+                LIMIT 1
+            `,
+            timeout: 2000
+        });
+
+        if (!activeRows.length) {
+            PUBLIC_PROMO_CAMPAIGNS_CACHE = {
+                expiresAt: now + 5 * 60 * 1000,
+                campaigns: []
+            };
+
+            return res.json({
+                ok: true,
+                campaigns: []
+            });
+        }
+
+        // 2) Повні дані тягнемо тільки якщо активна кампанія реально є.
         const [rows] = await db.query({
             sql: `
                 SELECT
@@ -876,6 +905,7 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
         });
     }
 });
+
 /* ===================== GET ACTIVE PERSONAL OFFERS ===================== */
 app.get("/api/personal-offers", async (req, res) => {
     try {
@@ -1221,6 +1251,261 @@ app.post("/api/staff/products", async (req, res) => {
             ok: false,
             error: "server error"
         });
+    }
+});
+
+/* ===================== STAFF: CREATE SALE ===================== */
+
+app.post("/api/staff/create-sale", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const customerId = Number(req.body.customerId || 0);
+        const productId = Number(req.body.productId || 0);
+        const quantity = Number(req.body.quantity || 0);
+        const paymentType = String(req.body.paymentType || "").trim();
+        const warehouseIdFromBody = Number(req.body.warehouseId || 0);
+
+        if (!staffId || !customerId || !productId || !quantity || !paymentType) {
+            return res.status(400).json({
+                ok: false,
+                error: "Заповніть клієнта, товар, кількість і тип оплати"
+            });
+        }
+
+        if (!Number.isInteger(quantity) || quantity <= 0) {
+            return res.status(400).json({
+                ok: false,
+                error: "Кількість має бути цілим числом більше 0"
+            });
+        }
+
+        const [staffRows] = await connection.query(
+            `
+            SELECT
+                id,
+                name,
+                role,
+                warehouse_id,
+                is_active
+            FROM staff_users
+            WHERE id = ?
+              AND is_active = 1
+            LIMIT 1
+            `,
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (!["admin", "manager", "partner"].includes(staff.role)) {
+            return res.status(403).json({
+                ok: false,
+                error: "Недостатньо прав для проведення продажу"
+            });
+        }
+
+        const warehouseId =
+            staff.role === "admin"
+                ? warehouseIdFromBody
+                : Number(staff.warehouse_id || 0);
+
+        if (!warehouseId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть склад продажу"
+            });
+        }
+
+        const [customerRows] = await connection.query(
+            `
+            SELECT
+                id,
+                name,
+                email,
+                phone,
+                total_spent,
+                customer_status
+            FROM customers
+            WHERE id = ?
+            LIMIT 1
+            `,
+            [customerId]
+        );
+
+        if (!customerRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Клієнта не знайдено"
+            });
+        }
+
+        const customer = customerRows[0];
+
+        await connection.beginTransaction();
+
+        const [stockRows] = await connection.query(
+            `
+            SELECT
+                id,
+                warehouse_id,
+                warehouse_name,
+                product_id,
+                product_key,
+                product_display_name,
+                retail_price,
+                cost_price,
+                realization_price,
+                initial_quantity,
+                sales_quantity,
+                final_quantity
+            FROM stock_balances
+            WHERE warehouse_id = ?
+              AND product_id = ?
+            LIMIT 1
+            FOR UPDATE
+            `,
+            [warehouseId, productId]
+        );
+
+        if (!stockRows.length) {
+            await connection.rollback();
+
+            return res.status(404).json({
+                ok: false,
+                error: "Товар не знайдено на цьому складі"
+            });
+        }
+
+        const stock = stockRows[0];
+        const currentBalance = Number(stock.final_quantity || 0);
+
+        if (currentBalance < quantity) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: `Недостатньо залишку. Доступно: ${currentBalance}`
+            });
+        }
+
+        const unitPrice = Number(stock.retail_price || 0);
+        const totalAmount = unitPrice * quantity;
+
+        const orderId = "STAFF-" + Date.now();
+
+        const paymentLabels = {
+            cash: "Готівка",
+            card_transfer: "Переказ на карту",
+            mono_qr: "Mono QR / посилання",
+            certificate: "Сертифікат"
+        };
+
+        const paymentLabel = paymentLabels[paymentType] || paymentType;
+
+        const itemsText =
+            `${stock.product_display_name} × ${quantity} — ${unitPrice} грн = ${totalAmount} грн`;
+
+        await connection.query(
+            `
+            UPDATE stock_balances
+            SET sales_quantity = sales_quantity + ?
+            WHERE id = ?
+              AND warehouse_id = ?
+            `,
+            [quantity, stock.id, warehouseId]
+        );
+
+        await connection.query(
+            `
+            INSERT INTO orders
+            (
+                order_id,
+                user_id,
+                user_email,
+                source,
+                buyer_name,
+                buyer_phone,
+                delivery,
+                items_text,
+                total_amount,
+                paid_amount,
+                due_amount,
+                payment_type,
+                order_note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+            [
+                orderId,
+                customer.id,
+                customer.email || null,
+                "staff",
+                customer.name || "",
+                customer.phone || "",
+                stock.warehouse_name || "",
+                itemsText,
+                totalAmount,
+                totalAmount,
+                0,
+                paymentLabel,
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${stock.warehouse_name || "—"} ID ${warehouseId}`
+            ]
+        );
+
+        const newTotalSpent = Number(customer.total_spent || 0) + totalAmount;
+        const newDiscount = getEffectiveDiscount(customer.customer_status, newTotalSpent);
+
+        await connection.query(
+            `
+            UPDATE customers
+            SET
+                total_spent = ?,
+                discount = ?
+            WHERE id = ?
+            `,
+            [newTotalSpent, newDiscount, customer.id]
+        );
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            sale: {
+                orderId,
+                warehouseId,
+                warehouseName: stock.warehouse_name,
+                productName: stock.product_display_name,
+                quantity,
+                unitPrice,
+                totalAmount,
+                paymentLabel,
+                customerName: customer.name,
+                stockBefore: currentBalance,
+                stockAfter: currentBalance - quantity
+            }
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("STAFF CREATE SALE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
     }
 });
 
