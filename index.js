@@ -1414,6 +1414,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const paymentType = String(req.body.paymentType || "").trim();
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const allowOutOfStock = Boolean(req.body.allowOutOfStock);
+        const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
 
         if (!staffId || !productId || !quantity || !paymentType) {
             return res.status(400).json({
@@ -1564,7 +1565,132 @@ app.post("/api/staff/create-sale", async (req, res) => {
             certificate: "Сертифікат"
         };
 
-        const paymentLabel = paymentLabels[paymentType] || paymentType;
+        let paymentLabel = paymentLabels[paymentType] || paymentType;
+        let paidAmount = totalAmount;
+        let dueAmount = 0;
+        let certificateToUse = null;
+        let certificateNote = "";
+
+        if (paymentType === "certificate") {
+            if (!certificateCode) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Вкажіть код сертифіката"
+                });
+            }
+
+            const sheetResult = await sheets.spreadsheets.values.get({
+                spreadsheetId: SHEET_ID,
+                range: `${SHEET_NAME}!A:H`,
+            });
+
+            const sheetRows = sheetResult.data.values || [];
+            const sheetRowIndex = sheetRows.findIndex((row, idx) =>
+                idx > 0 &&
+                String(row[0] || "").trim().toUpperCase() === certificateCode
+            );
+
+            if (sheetRowIndex === -1) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат не знайдено в Google таблиці"
+                });
+            }
+
+            const sheetRow = sheetRows[sheetRowIndex];
+            const sheetStatus = String(sheetRow[6] || "").trim().toLowerCase();
+
+            if (sheetStatus !== "active") {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат вже використаний або неактивний"
+                });
+            }
+
+            const [certRows] = await connection.query(
+                `
+                SELECT
+                    certificate_code,
+                    nominal,
+                    expires_at,
+                    used_at,
+                    status
+                FROM certificates
+                WHERE UPPER(certificate_code) = ?
+                LIMIT 1
+                FOR UPDATE
+                `,
+                [certificateCode]
+            );
+
+            if (!certRows.length) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат не знайдено в БД"
+                });
+            }
+
+            const cert = certRows[0];
+            const certStatus = String(cert.status || "").trim().toLowerCase();
+
+            if (certStatus !== "active") {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат вже використаний або неактивний"
+                });
+            }
+
+            if (cert.expires_at && new Date(cert.expires_at) < new Date()) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат прострочений"
+                });
+            }
+
+            const certificateNominal = Number(cert.nominal || sheetRow[1] || 0);
+            const certificateCoveredAmount = Math.min(certificateNominal, totalAmount);
+            const certificateRestAmount = Math.max(0, totalAmount - certificateNominal);
+
+            if (certificateRestAmount > 0) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    code: "certificate_extra_payment_required",
+                    certificateCode,
+                    certificateNominal,
+                    certificateCoveredAmount,
+                    certificateRestAmount,
+                    error: `Сертифікат покриває ${certificateCoveredAmount} грн. До оплати ще ${certificateRestAmount} грн.`
+                });
+            }
+
+            paidAmount = totalAmount;
+            dueAmount = 0;
+            paymentLabel = "Оплачено сертифікатом 100%";
+
+            certificateToUse = {
+                code: certificateCode,
+                sheetRowIndex,
+                coveredAmount: certificateCoveredAmount,
+                nominal: certificateNominal
+            };
+
+            certificateNote =
+                `, сертифікат ${certificateCode}, покрито ${certificateCoveredAmount} грн`;
+        }
 
         const itemsText =
             `${stock.product_display_name} × ${quantity} — ${unitPrice} грн = ${totalAmount} грн`;
@@ -1609,12 +1735,40 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 stock.warehouse_name || "",
                 itemsText,
                 totalAmount,
-                totalAmount,
-                0,
+                paidAmount,
+                dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${stock.warehouse_name || "—"} ID ${warehouseId}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${stock.warehouse_name || "—"} ID ${warehouseId}${certificateNote}`
             ]
         );
+
+        if (certificateToUse) {
+            const now = new Date().toISOString();
+
+            await sheets.spreadsheets.values.update({
+                spreadsheetId: SHEET_ID,
+                range: `${SHEET_NAME}!E${certificateToUse.sheetRowIndex + 1}:G${certificateToUse.sheetRowIndex + 1}`,
+                valueInputOption: "USER_ENTERED",
+                requestBody: {
+                    values: [
+                        [
+                            now,
+                            sheetRows[certificateToUse.sheetRowIndex][5] || "",
+                            "used"
+                        ],
+                    ],
+                },
+            });
+
+            await connection.query(
+                `
+                UPDATE certificates
+                SET used_at = ?, status = 'used'
+                WHERE UPPER(certificate_code) = ?
+                `,
+                [new Date(now), certificateToUse.code]
+            );
+        }
 
         if (customer) {
             const newTotalSpent = Number(customer.total_spent || 0) + totalAmount;
