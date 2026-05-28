@@ -2611,6 +2611,7 @@ app.post("/api/staff/stock-act", async (req, res) => {
         const [items] = await db.query(
             `
             SELECT
+                movement_type,
                 product_display_name,
                 quantity,
                 retail_price,
