@@ -1707,6 +1707,44 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         await connection.query(
             `
+            INSERT INTO stock_movements
+            (
+                document_number,
+                movement_type,
+                warehouse_id,
+                warehouse_name,
+                stock_balance_id,
+                product_id,
+                product_key,
+                product_display_name,
+                quantity,
+                retail_price,
+                cost_price,
+                realization_price,
+                created_by_staff_id,
+                created_by_name
+            )
+            VALUES (?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+            [
+                orderId,
+                stock.warehouse_id,
+                stock.warehouse_name,
+                stock.id,
+                stock.product_id,
+                stock.product_key,
+                stock.product_display_name,
+                quantity,
+                stock.retail_price,
+                stock.cost_price,
+                stock.realization_price,
+                staff.id,
+                staff.name
+            ]
+        );
+
+        await connection.query(
+            `
             INSERT INTO orders
             (
                 order_id,
@@ -2502,12 +2540,13 @@ app.post("/api/staff/stock-movement-acts", async (req, res) => {
                 SUM(quantity) AS total_quantity,
                 SUM(quantity * COALESCE(realization_price, retail_price, 0)) AS total_amount
             FROM stock_movements
+            WHERE movement_type IN ('transfer_in', 'transfer_return')
         `;
 
         const params = [];
 
         if (warehouseId) {
-            sql += " WHERE warehouse_id = ?";
+            sql += " AND warehouse_id = ?";
             params.push(warehouseId);
         }
 
