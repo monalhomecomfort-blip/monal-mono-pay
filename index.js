@@ -2688,18 +2688,20 @@ app.post("/api/staff/stock-act", async (req, res) => {
     }
 });
 
-/* ===================== STAFF: PRODUCTION STOCK REPORT ===================== */
+/* ===================== STAFF: STOCK MOVEMENT REPORT ===================== */
 
-app.post("/api/staff/production-stock-report", async (req, res) => {
+app.post("/api/staff/stock-movement-report", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
+        const warehouseIdRaw = req.body.warehouseId;
+        const warehouseId = warehouseIdRaw ? Number(warehouseIdRaw) : null;
         const startDate = String(req.body.startDate || "").trim();
         const endDate = String(req.body.endDate || "").trim();
 
         if (!staffId || !startDate || !endDate) {
             return res.status(400).json({
                 ok: false,
-                error: "Оберіть період звіту"
+                error: "Оберіть склад і період звіту"
             });
         }
 
@@ -2761,178 +2763,174 @@ app.post("/api/staff/production-stock-report", async (req, res) => {
             });
         }
 
-        const productionWarehouseId = Number(productionRows[0].warehouse_id);
-        const productionWarehouseName = productionRows[0].warehouse_name || "Склад виробництво";
+        const productionWarehouseId = Number(productionRows[0].warehouse_id || 0);
 
-        const [stockRows] = await db.query(
-            `
+        let stockSql = `
             SELECT
+                warehouse_id,
+                warehouse_name,
+                is_production_source,
                 product_id,
                 product_key,
                 product_display_name,
                 retail_price,
-                initial_quantity,
-                sales_quantity,
-                transfer_out_quantity,
                 final_quantity
             FROM stock_balances
-            WHERE warehouse_id = ?
-            ORDER BY product_display_name ASC
-            `,
-            [productionWarehouseId]
-        );
+        `;
 
-        const movementSql = `
+        const stockParams = [];
+
+        if (warehouseId) {
+            stockSql += " WHERE warehouse_id = ?";
+            stockParams.push(warehouseId);
+        }
+
+        stockSql += `
+            ORDER BY warehouse_id ASC, product_display_name ASC
+        `;
+
+        const [stockRows] = await db.query(stockSql, stockParams);
+
+        const [periodMovements] = await db.query(
+            `
             SELECT
+                warehouse_id,
+                warehouse_name,
                 product_id,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id = ? AND movement_type = 'transfer_in'
-                        THEN quantity ELSE 0
-                    END
-                ) AS production_in,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id <> ? AND movement_type = 'transfer_return'
-                        THEN quantity ELSE 0
-                    END
-                ) AS production_return_in,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id <> ? AND movement_type = 'transfer_in'
-                        THEN quantity ELSE 0
-                    END
-                ) AS transfer_out,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id = ? AND movement_type = 'sale'
-                        THEN quantity ELSE 0
-                    END
-                ) AS sales
+                movement_type,
+                quantity
             FROM stock_movements
             WHERE created_at >= ?
               AND created_at < ?
               AND movement_type IN ('transfer_in', 'transfer_return', 'sale')
-            GROUP BY product_id
-        `;
-
-        const [periodMovements] = await db.query(
-            movementSql,
-            [
-                productionWarehouseId,
-                productionWarehouseId,
-                productionWarehouseId,
-                productionWarehouseId,
-                startAt,
-                endExclusive
-            ]
+            `,
+            [startAt, endExclusive]
         );
 
-        const afterStartSql = `
+        const [afterStartMovements] = await db.query(
+            `
             SELECT
+                warehouse_id,
+                warehouse_name,
                 product_id,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id = ? AND movement_type = 'transfer_in'
-                        THEN quantity ELSE 0
-                    END
-                ) AS production_in,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id <> ? AND movement_type = 'transfer_return'
-                        THEN quantity ELSE 0
-                    END
-                ) AS production_return_in,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id <> ? AND movement_type = 'transfer_in'
-                        THEN quantity ELSE 0
-                    END
-                ) AS transfer_out,
-
-                SUM(
-                    CASE
-                        WHEN warehouse_id = ? AND movement_type = 'sale'
-                        THEN quantity ELSE 0
-                    END
-                ) AS sales
+                movement_type,
+                quantity
             FROM stock_movements
             WHERE created_at >= ?
               AND movement_type IN ('transfer_in', 'transfer_return', 'sale')
-            GROUP BY product_id
-        `;
-
-        const [afterStartMovements] = await db.query(
-            afterStartSql,
-            [
-                productionWarehouseId,
-                productionWarehouseId,
-                productionWarehouseId,
-                productionWarehouseId,
-                startAt
-            ]
+            `,
+            [startAt]
         );
 
-        const periodMap = new Map(
-            periodMovements.map(row => [Number(row.product_id), row])
-        );
+        function calcWarehouseProductMovement(stockRow, movements) {
+            const rowWarehouseId = Number(stockRow.warehouse_id || 0);
+            const productId = Number(stockRow.product_id || 0);
+            const isProduction = Number(stockRow.is_production_source || 0) === 1;
 
-        const afterStartMap = new Map(
-            afterStartMovements.map(row => [Number(row.product_id), row])
-        );
+            let incoming = 0;
+            let transferOut = 0;
+            let sales = 0;
+
+            movements.forEach(movement => {
+                const movementWarehouseId = Number(movement.warehouse_id || 0);
+                const movementProductId = Number(movement.product_id || 0);
+                const movementType = String(movement.movement_type || "");
+                const quantity = Number(movement.quantity || 0);
+
+                if (movementProductId !== productId) return;
+
+                if (isProduction) {
+                    if (
+                        movementWarehouseId === productionWarehouseId &&
+                        movementType === "transfer_in"
+                    ) {
+                        incoming += quantity;
+                    }
+
+                    if (
+                        movementWarehouseId !== productionWarehouseId &&
+                        movementType === "transfer_return"
+                    ) {
+                        incoming += quantity;
+                    }
+
+                    if (
+                        movementWarehouseId !== productionWarehouseId &&
+                        movementType === "transfer_in"
+                    ) {
+                        transferOut += quantity;
+                    }
+
+                    if (
+                        movementWarehouseId === productionWarehouseId &&
+                        movementType === "sale"
+                    ) {
+                        sales += quantity;
+                    }
+
+                    return;
+                }
+
+                if (
+                    movementWarehouseId === rowWarehouseId &&
+                    movementType === "transfer_in"
+                ) {
+                    incoming += quantity;
+                }
+
+                if (
+                    movementWarehouseId === rowWarehouseId &&
+                    movementType === "transfer_return"
+                ) {
+                    transferOut += quantity;
+                }
+
+                if (
+                    movementWarehouseId === rowWarehouseId &&
+                    movementType === "sale"
+                ) {
+                    sales += quantity;
+                }
+            });
+
+            return {
+                incoming,
+                transferOut,
+                sales
+            };
+        }
 
         const items = stockRows
             .map(row => {
-                const productId = Number(row.product_id);
-
-                const period = periodMap.get(productId) || {};
-                const afterStart = afterStartMap.get(productId) || {};
+                const period = calcWarehouseProductMovement(row, periodMovements);
+                const afterStart = calcWarehouseProductMovement(row, afterStartMovements);
 
                 const currentFinal = Number(row.final_quantity || 0);
 
-                const periodIn =
-                    Number(period.production_in || 0) +
-                    Number(period.production_return_in || 0);
-
-                const periodTransferOut = Number(period.transfer_out || 0);
-                const periodSales = Number(period.sales || 0);
-
-                const afterStartIn =
-                    Number(afterStart.production_in || 0) +
-                    Number(afterStart.production_return_in || 0);
-
-                const afterStartTransferOut = Number(afterStart.transfer_out || 0);
-                const afterStartSales = Number(afterStart.sales || 0);
-
                 const openingQuantity =
                     currentFinal -
-                    afterStartIn +
-                    afterStartTransferOut +
-                    afterStartSales;
+                    Number(afterStart.incoming || 0) +
+                    Number(afterStart.transferOut || 0) +
+                    Number(afterStart.sales || 0);
 
                 const closingQuantity =
                     openingQuantity +
-                    periodIn -
-                    periodTransferOut -
-                    periodSales;
+                    Number(period.incoming || 0) -
+                    Number(period.transferOut || 0) -
+                    Number(period.sales || 0);
 
                 return {
-                    product_id: productId,
+                    warehouse_id: Number(row.warehouse_id || 0),
+                    warehouse_name: row.warehouse_name,
+                    product_id: Number(row.product_id || 0),
                     product_key: row.product_key,
                     product_display_name: row.product_display_name,
                     retail_price: Number(row.retail_price || 0),
 
                     opening_quantity: openingQuantity,
-                    incoming_quantity: periodIn,
-                    transfer_out_quantity: periodTransferOut,
-                    sales_quantity: periodSales,
+                    incoming_quantity: Number(period.incoming || 0),
+                    transfer_out_quantity: Number(period.transferOut || 0),
+                    sales_quantity: Number(period.sales || 0),
                     closing_quantity: closingQuantity
                 };
             })
@@ -2962,11 +2960,17 @@ app.post("/api/staff/production-stock-report", async (req, res) => {
             }
         );
 
+        const selectedWarehouse = warehouseId
+            ? stockRows.find(row => Number(row.warehouse_id || 0) === warehouseId)
+            : null;
+
         return res.json({
             ok: true,
-            warehouse: {
-                warehouse_id: productionWarehouseId,
-                warehouse_name: productionWarehouseName
+            scope: {
+                warehouse_id: warehouseId,
+                warehouse_name: selectedWarehouse
+                    ? selectedWarehouse.warehouse_name
+                    : "Всі склади"
             },
             period: {
                 startDate,
@@ -2977,14 +2981,13 @@ app.post("/api/staff/production-stock-report", async (req, res) => {
         });
 
     } catch (err) {
-        console.error("STAFF PRODUCTION STOCK REPORT ERROR:", err);
+        console.error("STAFF STOCK MOVEMENT REPORT ERROR:", err);
         return res.status(500).json({
             ok: false,
             error: "server error"
         });
     }
 });
-
 /* ===================== STAFF: STOCK REPORT ===================== */
 
 app.post("/api/staff/stock-report", async (req, res) => {
