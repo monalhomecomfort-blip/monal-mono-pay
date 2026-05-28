@@ -2200,20 +2200,46 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
         }
 
         const items = itemsRaw
-            .map(item => ({
-                stockId: Number(item.stockId || 0),
-                enabled: Boolean(item.enabled),
-                quantity: Math.max(0, Number(item.quantity || 0)),
-                costPrice:
-                    item.costPrice === "" || item.costPrice === null || item.costPrice === undefined
-                        ? null
-                        : Number(item.costPrice),
-                realizationPrice:
-                    item.realizationPrice === "" || item.realizationPrice === null || item.realizationPrice === undefined
-                        ? null
-                        : Number(item.realizationPrice)
-            }))
-            .filter(item => item.stockId && item.enabled && item.quantity > 0);
+            .map(item => {
+                const transferInQuantity = Math.max(0, Number(item.transferInQuantity || item.quantity || 0));
+                const transferOutQuantity = Math.max(0, Number(item.transferOutQuantity || 0));
+
+                return {
+                    stockId: Number(item.stockId || 0),
+                    enabled: Boolean(item.enabled),
+                    transferInQuantity,
+                    transferOutQuantity,
+                    movementQuantity: transferInQuantity > 0 ? transferInQuantity : transferOutQuantity,
+                    movementType: transferOutQuantity > 0 ? "transfer_return" : "transfer_in",
+                    selectedWarehouseDelta: transferInQuantity - transferOutQuantity,
+                    productionTransferDelta: transferInQuantity - transferOutQuantity,
+                    costPrice:
+                        item.costPrice === "" || item.costPrice === null || item.costPrice === undefined
+                            ? null
+                            : Number(item.costPrice),
+                    realizationPrice:
+                        item.realizationPrice === "" || item.realizationPrice === null || item.realizationPrice === undefined
+                            ? null
+                            : Number(item.realizationPrice)
+                };
+            })
+            .filter(item =>
+                item.stockId &&
+                item.enabled &&
+                item.movementQuantity > 0
+            );
+
+        const mixedDirectionItem = items.find(item =>
+            item.transferInQuantity > 0 &&
+            item.transferOutQuantity > 0
+        );
+
+        if (mixedDirectionItem) {
+            return res.status(400).json({
+                ok: false,
+                error: "В одному рядку заповніть тільки одну колонку: або “Перемістити НА склад”, або “Перемістити ЗІ складу”."
+            });
+        }
 
         if (!items.length) {
             return res.status(400).json({
@@ -2297,7 +2323,7 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
                 [
                     finalCostPrice,
                     finalRealizationPrice,
-                    item.quantity,
+                    item.selectedWarehouseDelta,
                     stock.id,
                     warehouseId
                 ]
@@ -2306,7 +2332,9 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
             if (Number(stock.warehouse_id) !== productionWarehouseId) {
                 const [productionStockRows] = await connection.query(
                     `
-                    SELECT id
+                    SELECT
+                        id,
+                        transfer_out_quantity
                     FROM stock_balances
                     WHERE warehouse_id = ?
                       AND product_id = ?
@@ -2325,6 +2353,20 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
                     });
                 }
 
+                const currentProductionTransferOut = Number(productionStockRows[0].transfer_out_quantity || 0);
+
+                if (
+                    item.productionTransferDelta < 0 &&
+                    currentProductionTransferOut < Math.abs(item.productionTransferDelta)
+                ) {
+                    await connection.rollback();
+
+                    return res.status(400).json({
+                        ok: false,
+                        error: `Неможливо повернути "${stock.product_display_name}" більше, ніж було переміщено зі складу виробництва`
+                    });
+                }
+
                 await connection.query(
                     `
                     UPDATE stock_balances
@@ -2333,7 +2375,7 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
                       AND warehouse_id = ?
                     `,
                     [
-                        item.quantity,
+                        item.productionTransferDelta,
                         productionStockRows[0].id,
                         productionWarehouseId
                     ]
@@ -2359,17 +2401,18 @@ app.post("/api/staff/record-stock-movement", async (req, res) => {
                     created_by_staff_id,
                     created_by_name
                 )
-                VALUES (?, 'transfer_in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
                     documentNumber,
+                    item.movementType,
                     stock.warehouse_id,
                     stock.warehouse_name,
                     stock.id,
                     stock.product_id,
                     stock.product_key,
                     stock.product_display_name,
-                    item.quantity,
+                    item.movementQuantity,
                     stock.retail_price,
                     finalCostPrice,
                     finalRealizationPrice,
