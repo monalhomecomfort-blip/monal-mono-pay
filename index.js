@@ -2096,7 +2096,9 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
 
         const [warehouseRows] = await connection.query(
             `
-            SELECT MAX(warehouse_name) AS warehouse_name
+            SELECT
+                MAX(warehouse_name) AS warehouse_name,
+                MAX(is_production_source) AS is_production_source
             FROM stock_balances
             WHERE warehouse_id = ?
             `,
@@ -2104,6 +2106,7 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
         );
 
         const warehouseName = warehouseRows[0]?.warehouse_name || "";
+        const warehouseIsProduction = Number(warehouseRows[0]?.is_production_source || 0);
 
         if (!warehouseName) {
             return res.status(404).json({
@@ -2120,6 +2123,7 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
             (
                 warehouse_id,
                 warehouse_name,
+                is_production_source,
                 product_id,
                 product_key,
                 product_display_name,
@@ -2130,6 +2134,7 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
                 sales_quantity
             )
             SELECT
+                ?,
                 ?,
                 ?,
                 p.id,
@@ -2149,27 +2154,31 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
                       AND sb.product_id = p.id
               )
             `,
-            [warehouseId, warehouseName, warehouseId]
+            [warehouseId, warehouseName, warehouseIsProduction, warehouseId]
         );
 
         const [items] = await connection.query(
             `
             SELECT
-                id,
-                warehouse_id,
-                warehouse_name,
-                product_id,
-                product_key,
-                product_display_name,
-                retail_price,
-                cost_price,
-                realization_price,
-                initial_quantity,
-                sales_quantity,
-                final_quantity
-            FROM stock_balances
-            WHERE warehouse_id = ?
-            ORDER BY product_display_name ASC
+                sb.id,
+                sb.warehouse_id,
+                sb.warehouse_name,
+                sb.product_id,
+                sb.product_key,
+                sb.product_display_name,
+                sb.retail_price,
+                sb.cost_price,
+                sb.realization_price,
+                sb.initial_quantity,
+                sb.sales_quantity,
+                sb.final_quantity,
+                COALESCE(ps.final_quantity, 0) AS production_final_quantity
+            FROM stock_balances sb
+            LEFT JOIN stock_balances ps
+                ON ps.product_id = sb.product_id
+               AND ps.is_production_source = 1
+            WHERE sb.warehouse_id = ?
+            ORDER BY sb.product_display_name ASC
             `,
             [warehouseId]
         );
@@ -2180,7 +2189,8 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
             ok: true,
             warehouse: {
                 warehouse_id: warehouseId,
-                warehouse_name: warehouseName
+                warehouse_name: warehouseName,
+                is_production_source: warehouseIsProduction
             },
             items
         });
