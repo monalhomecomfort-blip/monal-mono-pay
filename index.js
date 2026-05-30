@@ -4199,6 +4199,7 @@ try {
             user_id,
             user_email,
             source,
+            customer_source,
             buyer_name,
             buyer_phone,
             delivery,
@@ -4208,11 +4209,12 @@ try {
             due_amount,
             payment_type,
             order_note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             orderId,
             order.customerDbId || (order.source === "site" ? order.userId : null),
             order.userEmail || null,
+            order.source || "site",
             order.source || "site",
             order.buyerName || "",
             order.buyerPhone || "",
