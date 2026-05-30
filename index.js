@@ -1412,13 +1412,25 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const paymentType = String(req.body.paymentType || "").trim();
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const allowOutOfStock = Boolean(req.body.allowOutOfStock);
+        const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
-        if (paymentType !== "mono_qr") {
+        const isStaffMonoPayment =
+            paymentType === "mono_qr" ||
+            paymentType === "certificate_mono_qr";
+
+        if (!isStaffMonoPayment) {
             return res.status(400).json({
                 ok: false,
                 error: "Для цього маршруту доступна тільки оплата Mono QR"
+            });
+        }
+
+        if (paymentType === "certificate_mono_qr" && !certificateCode) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть код сертифіката"
             });
         }
 
@@ -1571,21 +1583,120 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             });
         }
 
+        let certificateCoveredAmount = 0;
+        let certificateRestAmount = 0;
+        let paymentAmount = totalAmount;
+
+        if (paymentType === "certificate_mono_qr") {
+            const sheetResult = await sheets.spreadsheets.values.get({
+                spreadsheetId: SHEET_ID,
+                range: `${SHEET_NAME}!A:H`,
+            });
+
+            const sheetRows = sheetResult.data.values || [];
+            const sheetRow = sheetRows.find(row =>
+                String(row[0] || "").trim().toUpperCase() === certificateCode
+            );
+
+            if (!sheetRow) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат не знайдено в Google таблиці"
+                });
+            }
+
+            const sheetStatus = String(sheetRow[6] || "").trim().toLowerCase();
+            const sheetExpiresAt = sheetRow[3] || null;
+
+            if (sheetStatus !== "active") {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат вже використаний або неактивний"
+                });
+            }
+
+            if (sheetExpiresAt && new Date(sheetExpiresAt) < new Date()) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат прострочений у Google таблиці"
+                });
+            }
+
+            const [certRows] = await connection.query(
+                `
+                SELECT
+                    certificate_code,
+                    nominal,
+                    expires_at,
+                    used_at,
+                    status
+                FROM certificates
+                WHERE UPPER(certificate_code) = ?
+                LIMIT 1
+                `,
+                [certificateCode]
+            );
+
+            if (!certRows.length) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат не знайдено в БД"
+                });
+            }
+
+            const cert = certRows[0];
+            const certStatus = String(cert.status || "").trim().toLowerCase();
+
+            if (certStatus !== "active") {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат вже використаний або неактивний"
+                });
+            }
+
+            if (cert.expires_at && new Date(cert.expires_at) < new Date()) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат прострочений"
+                });
+            }
+
+            const certificateNominal = Number(cert.nominal || sheetRow[1] || 0);
+
+            if (!certificateNominal || certificateNominal <= 0) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Некоректний номінал сертифіката"
+                });
+            }
+
+            certificateCoveredAmount = Math.min(certificateNominal, totalAmount);
+            certificateRestAmount = Math.max(0, totalAmount - certificateNominal);
+            paymentAmount = certificateRestAmount;
+
+            if (paymentAmount <= 0) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат повністю покриває чек. Оберіть тип оплати “Сертифікат”."
+                });
+            }
+        }
+
         const orderId = "STAFF-MONO-" + Date.now();
 
         const salePayload = {
             staffId,
             customerId,
             items: saleItems,
-            paymentType: "mono_qr",
+            paymentType,
             warehouseId,
-            certificateCode: null,
+            certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
             allowOutOfStock,
             orderId
         };
 
         const pageUrl = await createMonoPaymentPageUrl({
-            amount: totalAmount,
+            amount: paymentAmount,
             orderId,
             destination: `Mōnal staff sale ${orderId}`,
             redirectUrl: "https://monal.com.ua/account/staff-cabinet.html"
@@ -1616,10 +1727,10 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
                 staffId,
                 warehouseId,
                 customerId || null,
-                "mono_qr",
+                paymentType,
                 totalAmount,
-                totalAmount,
-                null,
+                paymentAmount,
+                paymentType === "certificate_mono_qr" ? certificateCode : null,
                 allowOutOfStock ? 1 : 0,
                 JSON.stringify(salePayload)
             ]
@@ -1630,7 +1741,10 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             orderId,
             pageUrl,
             totalAmount,
-            paymentAmount: totalAmount
+            paymentAmount,
+            certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
+            certificateCoveredAmount,
+            certificateRestAmount
         });
 
     } catch (err) {
