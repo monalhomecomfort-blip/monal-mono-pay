@@ -3769,6 +3769,120 @@ app.post("/mono-webhook", async (req, res) => {
     const orderId =
         data.reference || data.merchantPaymInfo?.reference;
 
+    if (!orderId) {
+        console.log("MONO WEBHOOK: no reference/orderId");
+        return res.sendStatus(200);
+    }
+
+    if (String(orderId).startsWith("STAFF-MONO-")) {
+        const connection = await db.getConnection();
+
+        try {
+            const [pendingRows] = await connection.query(
+                `
+                SELECT
+                    id,
+                    order_id,
+                    sale_payload_json,
+                    status
+                FROM staff_mono_pending_sales
+                WHERE order_id = ?
+                LIMIT 1
+                `,
+                [orderId]
+            );
+
+            if (!pendingRows.length) {
+                console.log("STAFF MONO WEBHOOK: pending sale not found", orderId);
+                return res.sendStatus(200);
+            }
+
+            const pendingSale = pendingRows[0];
+
+            if (pendingSale.status === "completed") {
+                console.log("STAFF MONO WEBHOOK: already completed", orderId);
+                return res.sendStatus(200);
+            }
+
+            if (pendingSale.status !== "pending_payment") {
+                console.log("STAFF MONO WEBHOOK: wrong status", orderId, pendingSale.status);
+                return res.sendStatus(200);
+            }
+
+            await connection.query(
+                `
+                UPDATE staff_mono_pending_sales
+                SET
+                    status = 'paid',
+                    paid_at = NOW(),
+                    mono_invoice_id = COALESCE(?, mono_invoice_id)
+                WHERE id = ?
+                `,
+                [
+                    data.invoiceId || data.invoice_id || null,
+                    pendingSale.id
+                ]
+            );
+
+            const salePayload = JSON.parse(pendingSale.sale_payload_json || "{}");
+
+            const createSaleResponse = await fetch(
+                "https://monal-mono-pay-production.up.railway.app/api/staff/create-sale",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        ...salePayload,
+                        orderId,
+                        paymentType: "mono_qr",
+                        allowOutOfStock: Boolean(salePayload.allowOutOfStock)
+                    })
+                }
+            );
+
+            const createSaleData = await createSaleResponse.json();
+
+            if (!createSaleData.ok) {
+                console.error("STAFF MONO WEBHOOK CREATE SALE ERROR:", createSaleData);
+
+                await connection.query(
+                    `
+                    UPDATE staff_mono_pending_sales
+                    SET status = 'failed'
+                    WHERE id = ?
+                    `,
+                    [pendingSale.id]
+                );
+
+                return res.sendStatus(200);
+            }
+
+            await connection.query(
+                `
+                UPDATE staff_mono_pending_sales
+                SET
+                    status = 'completed',
+                    completed_at = NOW()
+                WHERE id = ?
+                `,
+                [pendingSale.id]
+            );
+
+            console.log("STAFF MONO SALE COMPLETED:", orderId);
+
+            return res.sendStatus(200);
+
+        } catch (err) {
+            console.error("STAFF MONO WEBHOOK ERROR:", err);
+            return res.sendStatus(200);
+
+        } finally {
+            connection.release();
+        }
+    }
+
     const order = ORDERS.get(orderId);
     if (!order) return res.sendStatus(200);
 
