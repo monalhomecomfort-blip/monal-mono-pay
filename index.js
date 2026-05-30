@@ -2105,6 +2105,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         let dueAmount = 0;
         let certificateToUse = null;
         let certificateNote = "";
+        let purchasedCertificates = [];
 
         const isCertificatePayment =
             paymentType === "certificate" ||
@@ -2344,6 +2345,33 @@ app.post("/api/staff/create-sale", async (req, res) => {
             ]
         );
 
+        for (const row of saleRows) {
+            const productKey = String(row.stock.product_key || "").toLowerCase();
+            const productName = String(row.stock.product_display_name || "").toLowerCase();
+
+            const isPurchasedCertificate =
+                productKey.startsWith("certificate_") ||
+                productName.includes("сертифікат");
+
+            if (!isPurchasedCertificate) continue;
+
+            const nominal = Number(row.unitPrice || row.stock.retail_price || 0);
+
+            if (!nominal || nominal <= 0) continue;
+
+            for (let i = 0; i < Number(row.quantity || 0); i++) {
+                const createdCertificate = await createPurchasedCertificate({
+                    connection,
+                    orderId,
+                    ownerUserId: customer ? customer.id : null,
+                    nominal,
+                    certificateType: "фізичний"
+                });
+
+                purchasedCertificates.push(createdCertificate);
+            }
+        }
+
         if (certificateToUse) {
             const now = new Date().toISOString();
 
@@ -2413,7 +2441,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     stockBefore: row.currentBalance,
                     stockAfter: row.currentBalance - row.quantity
                 })),
-                outOfStockAllowed: saleRows.some(row => row.currentBalance < row.quantity)
+                outOfStockAllowed: saleRows.some(row => row.currentBalance < row.quantity),
+                purchasedCertificates
             }
         });
 
