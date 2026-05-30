@@ -1587,7 +1587,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const pageUrl = await createMonoPaymentPageUrl({
             amount: totalAmount,
             orderId,
-            destination: `Mōnal staff sale ${orderId}`
+            destination: `Mōnal staff sale ${orderId}`,
+            redirectUrl: "https://monal.com.ua/account/staff-cabinet.html"
         });
 
         await connection.query(
