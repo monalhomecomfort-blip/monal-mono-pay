@@ -1229,6 +1229,7 @@ app.post("/api/staff/products", async (req, res) => {
                 id,
                 product_key,
                 display_name,
+                product_label,
                 price,
                 cost_price,
                 realization_price,
