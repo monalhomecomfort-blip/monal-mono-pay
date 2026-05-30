@@ -1795,6 +1795,20 @@ app.post("/api/staff/create-sale", async (req, res) => {
             });
         }
 
+        const requiresMonoInvoice =
+            paymentType === "mono_qr" ||
+            paymentType === "certificate_mono_qr";
+
+        if (
+            requiresMonoInvoice &&
+            !externalOrderId.startsWith("STAFF-MONO-")
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error: "Для Mono QR спочатку потрібно створити посилання на оплату."
+            });
+        }
+
         const invalidItem = saleItems.find(item =>
             !item.productId ||
             !Number.isInteger(item.quantity) ||
