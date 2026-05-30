@@ -1556,7 +1556,12 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
 
         const saleItems = bodyItems.map(item => ({
             productId: Number(item.productId || item.product_id || 0),
-            quantity: Number(item.quantity || 0)
+            quantity: Number(item.quantity || 0),
+            discoveryAromas: Array.isArray(item.discoveryAromas)
+                ? item.discoveryAromas
+                    .map(aroma => String(aroma || "").trim())
+                    .filter(Boolean)
+                : []
         }));
 
         if (!staffId || !saleItems.length) {
@@ -1685,7 +1690,12 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
                 currentBalance,
                 unitPrice,
                 rowTotal: unitPrice * saleItem.quantity,
-                isCertificateProduct
+                isCertificateProduct,
+                discoveryAromas: Array.isArray(saleItem.discoveryAromas)
+                    ? saleItem.discoveryAromas
+                        .map(aroma => String(aroma || "").trim())
+                        .filter(Boolean)
+                    : []
             });
         }
 
@@ -1918,12 +1928,18 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const saleItems = bodyItems.length
             ? bodyItems.map(item => ({
                 productId: Number(item.productId || item.product_id || 0),
-                quantity: Number(item.quantity || 0)
+                quantity: Number(item.quantity || 0),
+                discoveryAromas: Array.isArray(item.discoveryAromas)
+                    ? item.discoveryAromas
+                        .map(aroma => String(aroma || "").trim())
+                        .filter(Boolean)
+                    : []
             }))
             : [
                 {
                     productId: Number(req.body.productId || 0),
-                    quantity: Number(req.body.quantity || 0)
+                    quantity: Number(req.body.quantity || 0),
+                    discoveryAromas: []
                 }
             ];
 
@@ -2104,7 +2120,12 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 currentBalance,
                 unitPrice,
                 rowTotal,
-                isCertificateProduct
+                isCertificateProduct,
+                discoveryAromas: Array.isArray(saleItem.discoveryAromas)
+                    ? saleItem.discoveryAromas
+                        .map(aroma => String(aroma || "").trim())
+                        .filter(Boolean)
+                    : []
             });
         }
 
@@ -2294,8 +2315,31 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const orderId = externalOrderId || "STAFF-" + Date.now();
 
+        function getStaffSaleProductText(row) {
+            const baseName = String(row?.stock?.product_display_name || "Товар").trim();
+            const productKey = String(row?.stock?.product_key || "").trim().toLowerCase();
+            const lowerName = baseName.toLowerCase();
+
+            const isDiscovery =
+                productKey.includes("discovery") ||
+                lowerName.includes("discovery") ||
+                lowerName.includes("діскавер");
+
+            const aromas = Array.isArray(row.discoveryAromas)
+                ? row.discoveryAromas
+                    .map(aroma => String(aroma || "").trim())
+                    .filter(Boolean)
+                : [];
+
+            if (!isDiscovery || !aromas.length) {
+                return baseName;
+            }
+
+            return `${baseName} (аромати: ${aromas.join(", ")})`;
+        }
+
         const itemsText = saleRows.map(row =>
-            `${row.stock.product_display_name} × ${row.quantity} — ${row.unitPrice} грн = ${row.rowTotal} грн`
+            `${getStaffSaleProductText(row)} × ${row.quantity} — ${row.unitPrice} грн = ${row.rowTotal} грн`
         ).join("\n");
 
         for (const row of saleRows) {
@@ -4164,12 +4208,25 @@ app.post("/api/staff/sales-report", async (req, res) => {
                 const realizationPrice = Number(product?.realization_price || 0);
 
                 const productId = Number(product?.id || 0);
-                const productName = product?.display_name || item.productName;
+
+                const itemProductName = String(item.productName || "").trim();
+                const itemProductNameLower = normalizeText(itemProductName);
+
+                const isDiscoveryReportItem =
+                    itemProductNameLower.includes("discovery") ||
+                    itemProductNameLower.includes("діскавер");
+
+                const productName =
+                    isDiscoveryReportItem && itemProductNameLower.includes("аромати:")
+                        ? itemProductName
+                        : (product?.display_name || itemProductName);
 
                 const key = [
                     sourceKey,
                     orderWarehouseId || 0,
-                    productId || normalizeText(productName)
+                    isDiscoveryReportItem && itemProductNameLower.includes("аромати:")
+                        ? normalizeText(productName)
+                        : (productId || normalizeText(productName))
                 ].join("|");
 
                 if (!reportMap.has(key)) {
