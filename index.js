@@ -3381,18 +3381,22 @@ app.post("/register-order", async (req, res) => {
     }
 });
    
-/* ===================== CREATE PAYMENT ===================== */
+/* ===================== CREATE MONO PAYMENT LINK ===================== */
 
-app.post("/create-payment", async (req, res) => {
-    const { amount, orderId } = req.body;
+async function createMonoPaymentPageUrl({
+    amount,
+    orderId,
+    destination = null,
+    redirectUrl = "https://monal.com.ua/payment-success.html"
+}) {
+    const numericAmount = Number(amount);
 
-    // ✅ ОБОВʼЯЗКОВІ ПЕРЕВІРКИ
-    if (!amount || isNaN(amount)) {
-        return res.status(400).json({ error: "Invalid amount" });
+    if (!numericAmount || isNaN(numericAmount)) {
+        throw new Error("Invalid amount");
     }
 
     if (!orderId) {
-        return res.status(400).json({ error: "Missing orderId" });
+        throw new Error("Missing orderId");
     }
 
     const response = await fetch(
@@ -3404,13 +3408,13 @@ app.post("/create-payment", async (req, res) => {
                 "X-Token": process.env.MONO_TOKEN,
             },
             body: JSON.stringify({
-                amount: Math.round(amount * 100),
+                amount: Math.round(numericAmount * 100),
                 ccy: 980,
                 merchantPaymInfo: {
                     reference: orderId,
-                    destination: `Замовлення №${orderId}`,
+                    destination: destination || `Замовлення №${orderId}`,
                 },
-                redirectUrl: "https://monal.com.ua/payment-success.html",
+                redirectUrl,
                 webhookUrl:
                     "https://monal-mono-pay-production.up.railway.app/mono-webhook",
             }),
@@ -3421,10 +3425,43 @@ app.post("/create-payment", async (req, res) => {
 
     if (!response.ok || !data.pageUrl) {
         console.error("MONO ERROR:", data);
-        return res.status(400).json(data);
+
+        const error = new Error("Mono payment error");
+        error.monoData = data;
+        throw error;
     }
 
-    res.json({ pageUrl: data.pageUrl });
+    return data.pageUrl;
+}
+
+/* ===================== CREATE PAYMENT ===================== */
+
+app.post("/create-payment", async (req, res) => {
+    const { amount, orderId } = req.body;
+
+    if (!amount || isNaN(amount)) {
+        return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    if (!orderId) {
+        return res.status(400).json({ error: "Missing orderId" });
+    }
+
+    try {
+        const pageUrl = await createMonoPaymentPageUrl({
+            amount,
+            orderId
+        });
+
+        return res.json({ pageUrl });
+
+    } catch (err) {
+        console.error("CREATE PAYMENT ERROR:", err.monoData || err);
+
+        return res.status(400).json(
+            err.monoData || { error: "Mono payment error" }
+        );
+    }
 });
 
 
