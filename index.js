@@ -3636,6 +3636,438 @@ app.post("/api/staff/my-stock", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: SALES REPORT ===================== */
+
+app.post("/api/staff/sales-report", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const startDate = String(req.body.startDate || "").trim();
+        const endDate = String(req.body.endDate || "").trim();
+
+        const warehouses = Array.isArray(req.body.warehouses)
+            ? req.body.warehouses.map(Number).filter(Boolean)
+            : [];
+
+        const sources = Array.isArray(req.body.sources)
+            ? req.body.sources.map(item => String(item || "").trim()).filter(Boolean)
+            : [];
+
+        const categories = Array.isArray(req.body.categories)
+            ? req.body.categories.map(item => String(item || "").trim()).filter(Boolean)
+            : [];
+
+        const byDays = Boolean(req.body.byDays);
+
+        if (!staffId || !startDate || !endDate) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть період звіту"
+            });
+        }
+
+        if (
+            !/^\d{4}-\d{2}-\d{2}$/.test(startDate) ||
+            !/^\d{4}-\d{2}-\d{2}$/.test(endDate)
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректний формат дати"
+            });
+        }
+
+        const startAt = `${startDate} 00:00:00`;
+
+        const endDateObj = new Date(`${endDate}T00:00:00.000Z`);
+        endDateObj.setUTCDate(endDateObj.getUTCDate() + 1);
+
+        const endExclusive =
+            endDateObj.toISOString().slice(0, 10) + " 00:00:00";
+
+        const [staffRows] = await db.query(
+            `
+            SELECT
+                id,
+                role,
+                warehouse_id,
+                is_active
+            FROM staff_users
+            WHERE id = ?
+              AND is_active = 1
+            LIMIT 1
+            `,
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+        const role = String(staff.role || "").trim();
+
+        if (!["admin", "manager", "partner"].includes(role)) {
+            return res.status(403).json({
+                ok: false,
+                error: "Недостатньо прав"
+            });
+        }
+
+        const canViewCost = role === "admin";
+        const staffWarehouseId = Number(staff.warehouse_id || 0);
+
+        const [warehouseRows] = await db.query(
+            `
+            SELECT
+                warehouse_id,
+                MAX(warehouse_name) AS warehouse_name
+            FROM stock_balances
+            GROUP BY warehouse_id
+            `
+        );
+
+        const warehouseMap = new Map();
+
+        warehouseRows.forEach(row => {
+            warehouseMap.set(Number(row.warehouse_id || 0), row.warehouse_name || "");
+        });
+
+        const [products] = await db.query(
+            `
+            SELECT
+                id,
+                product_key,
+                display_name,
+                product_label,
+                price,
+                cost_price,
+                realization_price
+            FROM products_catalog
+            WHERE is_active = 1
+            `
+        );
+
+        function normalizeText(value) {
+            return String(value || "")
+                .toLowerCase()
+                .replace(/ё/g, "е")
+                .replace(/[’ʼ']/g, "'")
+                .replace(/\s+/g, " ")
+                .trim();
+        }
+
+        const productByName = new Map();
+
+        products.forEach(product => {
+            const displayName = normalizeText(product.display_name);
+            const productKey = normalizeText(product.product_key);
+
+            if (displayName) {
+                productByName.set(displayName, product);
+            }
+
+            if (productKey) {
+                productByName.set(productKey, product);
+            }
+        });
+
+        function findProductByName(name) {
+            const cleanName = normalizeText(name);
+
+            if (!cleanName) return null;
+
+            if (productByName.has(cleanName)) {
+                return productByName.get(cleanName);
+            }
+
+            return products.find(product => {
+                const productName = normalizeText(product.display_name);
+                return productName && (
+                    productName.includes(cleanName) ||
+                    cleanName.includes(productName)
+                );
+            }) || null;
+        }
+
+        function normalizeSource(value, fallbackSource) {
+            const raw = String(value || "").trim().toLowerCase();
+            const fallback = String(fallbackSource || "").trim().toLowerCase();
+
+            if (raw) return raw;
+            if (fallback === "site") return "site";
+            if (fallback === "bot") return "bot";
+
+            return "empty";
+        }
+
+        function getSourceLabel(sourceKey) {
+            const labels = {
+                instagram: "Instagram",
+                tiktok: "TikTok",
+                facebook: "Facebook",
+                online_ads: "Реклама",
+                recommendation: "Рекомендація",
+                regular_customer: "Постійний покупець",
+                site: "Site",
+                bot: "Bot",
+                empty: "Не вказано"
+            };
+
+            return labels[sourceKey] || sourceKey || "Не вказано";
+        }
+
+        function parseNumber(value) {
+            const clean = String(value || "")
+                .replace(/\s/g, "")
+                .replace(",", ".");
+
+            const number = Number(clean);
+
+            return Number.isFinite(number) ? number : 0;
+        }
+
+        function extractWarehouseId(orderNote) {
+            const match = String(orderNote || "").match(/ID\s*(\d+)/i);
+            return match ? Number(match[1] || 0) : 0;
+        }
+
+        function parseItemsText(itemsText) {
+            return String(itemsText || "")
+                .split("\n")
+                .map(line => line.trim())
+                .filter(Boolean)
+                .filter(line => !line.startsWith("↳"))
+                .map(line => line.replace(/^•\s*/, "").trim())
+                .map(line => {
+                    const staffMatch = line.match(/^(.+?)\s*[×x]\s*(\d+)\s*[—-]\s*([\d.,]+)\s*грн(?:\s*=\s*([\d.,]+)\s*грн)?/i);
+
+                    if (staffMatch) {
+                        const quantity = Number(staffMatch[2] || 0);
+                        const unitPrice = parseNumber(staffMatch[3]);
+
+                        return {
+                            productName: String(staffMatch[1] || "").trim(),
+                            quantity,
+                            unitPrice,
+                            rowTotal: parseNumber(staffMatch[4]) || unitPrice * quantity
+                        };
+                    }
+
+                    const siteMatch = line.match(/^(.+?)\s*[—-]\s*([\d.,]+)\s*грн/i);
+
+                    if (siteMatch) {
+                        const unitPrice = parseNumber(siteMatch[2]);
+
+                        return {
+                            productName: String(siteMatch[1] || "").trim(),
+                            quantity: 1,
+                            unitPrice,
+                            rowTotal: unitPrice
+                        };
+                    }
+
+                    return null;
+                })
+                .filter(Boolean)
+                .filter(item => {
+                    const name = normalizeText(item.productName);
+
+                    return (
+                        name &&
+                        !name.includes("сертиф") &&
+                        Number(item.quantity || 0) > 0
+                    );
+                });
+        }
+
+        let ordersSql = `
+            SELECT
+                id,
+                order_id,
+                source,
+                customer_source,
+                delivery,
+                items_text,
+                total_amount,
+                paid_amount,
+                due_amount,
+                payment_type,
+                order_note,
+                DATE_FORMAT(created_at, '%Y-%m-%d') AS sale_date,
+                created_at
+            FROM orders
+            WHERE created_at >= ?
+              AND created_at < ?
+        `;
+
+        const ordersParams = [startAt, endExclusive];
+
+        if (role !== "admin") {
+            if (!staffWarehouseId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "До staff-акаунта не привʼязано склад"
+                });
+            }
+
+            ordersSql += `
+              AND source = 'staff'
+            `;
+        }
+
+        ordersSql += `
+            ORDER BY created_at ASC, id ASC
+        `;
+
+        const [orders] = await db.query(ordersSql, ordersParams);
+
+        const reportMap = new Map();
+        const daySet = new Set();
+
+        orders.forEach(order => {
+            const sourceKey = normalizeSource(order.customer_source, order.source);
+
+            if (sources.length) {
+                const sourceMatches =
+                    sources.includes(sourceKey) ||
+                    (sources.includes("empty") && sourceKey === "empty");
+
+                if (!sourceMatches) return;
+            }
+
+            const orderWarehouseId =
+                String(order.source || "").toLowerCase() === "staff"
+                    ? extractWarehouseId(order.order_note)
+                    : 0;
+
+            const orderWarehouseName =
+                orderWarehouseId
+                    ? (warehouseMap.get(orderWarehouseId) || order.delivery || "")
+                    : "";
+
+            if (role !== "admin" && orderWarehouseId !== staffWarehouseId) {
+                return;
+            }
+
+            if (role === "admin" && warehouses.length) {
+                if (!warehouses.includes(orderWarehouseId)) return;
+            }
+
+            const parsedItems = parseItemsText(order.items_text);
+
+            parsedItems.forEach(item => {
+                const product = findProductByName(item.productName);
+
+                const productLabel = String(product?.product_label || "Не визначено").trim();
+
+                if (categories.length && !categories.includes(productLabel)) {
+                    return;
+                }
+
+                const quantity = Number(item.quantity || 0);
+                if (!quantity) return;
+
+                const retailPrice = Number(item.unitPrice || product?.price || 0);
+                const costPrice = Number(product?.cost_price || 0);
+                const realizationPrice = Number(product?.realization_price || 0);
+
+                const productId = Number(product?.id || 0);
+                const productName = product?.display_name || item.productName;
+
+                const key = [
+                    sourceKey,
+                    orderWarehouseId || 0,
+                    productId || normalizeText(productName)
+                ].join("|");
+
+                if (!reportMap.has(key)) {
+                    reportMap.set(key, {
+                        source_key: sourceKey,
+                        source: getSourceLabel(sourceKey),
+                        warehouse_id: orderWarehouseId || null,
+                        warehouse_name: orderWarehouseName || "",
+                        product_id: productId || null,
+                        product_name: productName,
+                        category: productLabel,
+                        quantity: 0,
+                        retail_price: retailPrice,
+                        retail_amount: 0,
+                        cost_price: canViewCost ? costPrice : null,
+                        cost_amount: canViewCost ? 0 : null,
+                        realization_price: realizationPrice,
+                        realization_amount: 0,
+                        days: {}
+                    });
+                }
+
+                const row = reportMap.get(key);
+
+                row.quantity += quantity;
+                row.retail_amount += retailPrice * quantity;
+                row.realization_amount += realizationPrice * quantity;
+
+                if (canViewCost) {
+                    row.cost_amount += costPrice * quantity;
+                }
+
+                if (byDays) {
+                    const day = String(order.sale_date || "").slice(0, 10);
+
+                    if (day) {
+                        daySet.add(day);
+
+                        if (!row.days[day]) {
+                            row.days[day] = {
+                                quantity: 0,
+                                retail_amount: 0,
+                                cost_amount: canViewCost ? 0 : null,
+                                realization_amount: 0
+                            };
+                        }
+
+                        row.days[day].quantity += quantity;
+                        row.days[day].retail_amount += retailPrice * quantity;
+                        row.days[day].realization_amount += realizationPrice * quantity;
+
+                        if (canViewCost) {
+                            row.days[day].cost_amount += costPrice * quantity;
+                        }
+                    }
+                }
+            });
+        });
+
+        const items = Array.from(reportMap.values())
+            .filter(row => Number(row.quantity || 0) > 0)
+            .sort((a, b) => {
+                const sourceCompare = String(a.source).localeCompare(String(b.source), "uk");
+                if (sourceCompare) return sourceCompare;
+
+                const warehouseCompare = String(a.warehouse_name || "").localeCompare(String(b.warehouse_name || ""), "uk");
+                if (warehouseCompare) return warehouseCompare;
+
+                return String(a.product_name || "").localeCompare(String(b.product_name || ""), "uk");
+            });
+
+        return res.json({
+            ok: true,
+            canViewCost,
+            days: Array.from(daySet).sort(),
+            items
+        });
+
+    } catch (err) {
+        console.error("STAFF SALES REPORT ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== HEALTH ===================== */
 app.get("/", (req, res) => {
     res.send("Mono webhook is alive");
