@@ -1413,6 +1413,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const allowOutOfStock = Boolean(req.body.allowOutOfStock);
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
+        const customerSource = String(req.body.customerSource || "").trim() || null;
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -1687,6 +1688,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const salePayload = {
             staffId,
             customerId,
+            customerSource,
             items: saleItems,
             paymentType,
             warehouseId,
