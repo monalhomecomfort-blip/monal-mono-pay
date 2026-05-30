@@ -1773,6 +1773,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const allowOutOfStock = Boolean(req.body.allowOutOfStock);
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
         const externalOrderId = String(req.body.orderId || "").trim();
+        const customerSource = String(req.body.customerSource || "").trim() || null;
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -2201,6 +2202,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 user_id,
                 user_email,
                 source,
+                customer_source,
                 buyer_name,
                 buyer_phone,
                 delivery,
@@ -2211,13 +2213,14 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 payment_type,
                 order_note
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
             [
                 orderId,
                 customer ? customer.id : null,
                 customer ? (customer.email || null) : null,
                 "staff",
+                customerSource,
                 customer ? (customer.name || "") : "Продаж без клієнта",
                 customer ? (customer.phone || "") : "",
                 mainWarehouseName,
