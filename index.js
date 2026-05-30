@@ -125,6 +125,114 @@ async function markCertificateAsUsed(certCode) {
         [new Date(now), certCode]
     );
 }
+
+function generateCertificateCode() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    const part1 = Array.from(
+        { length: 4 },
+        () => chars[Math.floor(Math.random() * chars.length)]
+    ).join("");
+
+    const part2 = Array.from(
+        { length: 4 },
+        () => chars[Math.floor(Math.random() * chars.length)]
+    ).join("");
+
+    return `${part1}-${part2}`;
+}
+
+async function generateUniqueCertificateCode(connection) {
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const certCode = generateCertificateCode();
+
+        const [rows] = await connection.query(
+            `
+            SELECT id
+            FROM certificates
+            WHERE certificate_code = ?
+            LIMIT 1
+            `,
+            [certCode]
+        );
+
+        if (!rows.length) {
+            return certCode;
+        }
+    }
+
+    throw new Error("Не вдалося згенерувати унікальний код сертифіката");
+}
+
+async function createPurchasedCertificate({
+    connection,
+    orderId,
+    ownerUserId,
+    nominal,
+    certificateType = "фізичний"
+}) {
+    const createdAt = new Date();
+
+    const expiresAt = new Date(createdAt);
+    expiresAt.setMonth(createdAt.getMonth() + 3);
+
+    const certCode = await generateUniqueCertificateCode(connection);
+
+    await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: `${SHEET_NAME}!A:H`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+            values: [
+                [
+                    certCode,
+                    Number(nominal || 0),
+                    createdAt.toISOString(),
+                    expiresAt.toISOString(),
+                    "",
+                    orderId,
+                    "active",
+                    certificateType
+                ]
+            ]
+        }
+    });
+
+    await connection.query(
+        `
+        INSERT INTO certificates
+        (
+            certificate_code,
+            owner_user_id,
+            purchase_order_id,
+            nominal,
+            created_at,
+            expires_at,
+            used_at,
+            status,
+            certificate_type
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+            certCode,
+            ownerUserId || null,
+            orderId,
+            Number(nominal || 0),
+            createdAt,
+            expiresAt,
+            null,
+            "active",
+            certificateType
+        ]
+    );
+
+    return {
+        code: certCode,
+        nominal: Number(nominal || 0),
+        expiresAt
+    };
+}
 /* ===================== CONFIG ===================== */
 
 app.use(cors({
