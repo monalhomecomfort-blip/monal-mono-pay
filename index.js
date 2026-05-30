@@ -1714,6 +1714,16 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         let certificateRestAmount = 0;
         let paymentAmount = totalAmount;
 
+        if (
+            saleRows.some(row => row.isCertificateProduct) &&
+            paymentType === "certificate_mono_qr"
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error: "Сертифікат не можна оплатити сертифікатом. Оберіть Mono QR без сертифіката."
+            });
+        }
+
         if (paymentType === "certificate_mono_qr") {
             const sheetResult = await sheets.spreadsheets.values.get({
                 spreadsheetId: SHEET_ID,
@@ -2135,6 +2145,18 @@ app.post("/api/staff/create-sale", async (req, res) => {
             paymentType === "certificate" ||
             paymentType === "certificate_cash" ||
             paymentType === "certificate_mono_qr";
+
+        if (
+            saleRows.some(row => row.isCertificateProduct) &&
+            isCertificatePayment
+        ) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Сертифікат не можна оплатити сертифікатом. Оберіть готівку, переказ на карту або Mono QR."
+            });
+        }
 
         if (isCertificatePayment) {
             if (!certificateCode) {
