@@ -1539,10 +1539,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
                 });
             }
 
-            const unitPrice =
-                stock.realization_price !== null && stock.realization_price !== undefined
-                    ? Number(stock.realization_price || 0)
-                    : Number(stock.retail_price || 0);
+            const unitPrice = Number(stock.retail_price || 0);
 
             saleRows.push({
                 stock,
@@ -1823,10 +1820,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 });
             }
 
-            const unitPrice =
-                stock.realization_price !== null && stock.realization_price !== undefined
-                    ? Number(stock.realization_price || 0)
-                    : Number(stock.retail_price || 0);
+            const unitPrice = Number(stock.retail_price || 0);
 
             const rowTotal = unitPrice * saleItem.quantity;
 
