@@ -1524,6 +1524,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         await connection.beginTransaction();
 
         const saleRows = [];
+        const outOfStockItems = [];
 
         for (const saleItem of saleItems) {
             const [stockRows] = await connection.query(
@@ -1567,15 +1568,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
 
             if (!allowOutOfStock && currentBalance < saleItem.quantity) {
-                await connection.rollback();
-
-                return res.status(400).json({
-                    ok: false,
-                    code: "out_of_stock_confirm_required",
+                outOfStockItems.push({
                     productName: stock.product_display_name,
                     currentBalance,
-                    requestedQuantity: saleItem.quantity,
-                    error: `Недостатньо залишку. ${stock.product_display_name}: доступно ${currentBalance}`
+                    requestedQuantity: saleItem.quantity
                 });
             }
 
@@ -1592,6 +1588,20 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 currentBalance,
                 unitPrice,
                 rowTotal
+            });
+        }
+
+        if (!allowOutOfStock && outOfStockItems.length) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                code: "out_of_stock_confirm_required",
+                outOfStockItems,
+                productName: outOfStockItems[0]?.productName || "товар",
+                currentBalance: outOfStockItems[0]?.currentBalance ?? 0,
+                requestedQuantity: outOfStockItems[0]?.requestedQuantity ?? 0,
+                error: "Недостатньо залишку по товарах у чеку"
             });
         }
 
