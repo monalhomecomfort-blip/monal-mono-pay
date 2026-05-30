@@ -1409,24 +1409,42 @@ app.post("/api/staff/create-sale", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
         const customerId = Number(req.body.customerId || 0);
-        const productId = Number(req.body.productId || 0);
-        const quantity = Number(req.body.quantity || 0);
         const paymentType = String(req.body.paymentType || "").trim();
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const allowOutOfStock = Boolean(req.body.allowOutOfStock);
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
 
-        if (!staffId || !productId || !quantity || !paymentType) {
+        const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
+
+        const saleItems = bodyItems.length
+            ? bodyItems.map(item => ({
+                productId: Number(item.productId || item.product_id || 0),
+                quantity: Number(item.quantity || 0)
+            }))
+            : [
+                {
+                    productId: Number(req.body.productId || 0),
+                    quantity: Number(req.body.quantity || 0)
+                }
+            ];
+
+        if (!staffId || !paymentType || !saleItems.length) {
             return res.status(400).json({
                 ok: false,
-                error: "Заповніть товар, кількість і тип оплати"
+                error: "Заповніть товари і тип оплати"
             });
         }
 
-        if (!Number.isInteger(quantity) || quantity <= 0) {
+        const invalidItem = saleItems.find(item =>
+            !item.productId ||
+            !Number.isInteger(item.quantity) ||
+            item.quantity <= 0
+        );
+
+        if (invalidItem) {
             return res.status(400).json({
                 ok: false,
-                error: "Кількість має бути цілим числом більше 0"
+                error: "Усі товари мають бути обрані, кількість має бути цілим числом більше 0"
             });
         }
 
@@ -1505,64 +1523,88 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         await connection.beginTransaction();
 
-        const [stockRows] = await connection.query(
-            `
-            SELECT
-                id,
-                warehouse_id,
-                warehouse_name,
-                product_id,
-                product_key,
-                product_display_name,
-                retail_price,
-                cost_price,
-                realization_price,
-                initial_quantity,
-                sales_quantity,
-                final_quantity
-            FROM stock_balances
-            WHERE warehouse_id = ?
-              AND product_id = ?
-            LIMIT 1
-            FOR UPDATE
-            `,
-            [warehouseId, productId]
-        );
+        const saleRows = [];
 
-        if (!stockRows.length) {
-            await connection.rollback();
+        for (const saleItem of saleItems) {
+            const [stockRows] = await connection.query(
+                `
+                SELECT
+                    id,
+                    warehouse_id,
+                    warehouse_name,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    retail_price,
+                    cost_price,
+                    realization_price,
+                    initial_quantity,
+                    sales_quantity,
+                    final_quantity
+                FROM stock_balances
+                WHERE warehouse_id = ?
+                  AND product_id = ?
+                LIMIT 1
+                FOR UPDATE
+                `,
+                [warehouseId, saleItem.productId]
+            );
 
-            return res.status(404).json({
-                ok: false,
-                error: "Товар не знайдено на цьому складі"
-            });
-        }
+            if (!stockRows.length) {
+                await connection.rollback();
 
-        const stock = stockRows[0];
-        const currentBalance = Number(stock.final_quantity || 0);
+                return res.status(404).json({
+                    ok: false,
+                    error: "Товар не знайдено на обраному складі"
+                });
+            }
 
-        if (currentBalance < quantity && !allowOutOfStock) {
-            await connection.rollback();
+            const stock = stockRows[0];
 
-            return res.status(400).json({
-                ok: false,
-                code: "out_of_stock_confirm_required",
+            const currentBalance =
+                stock.final_quantity !== null && stock.final_quantity !== undefined
+                    ? Number(stock.final_quantity || 0)
+                    : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+
+            if (!allowOutOfStock && currentBalance < saleItem.quantity) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    code: "out_of_stock_confirm_required",
+                    productName: stock.product_display_name,
+                    currentBalance,
+                    requestedQuantity: saleItem.quantity,
+                    error: `Недостатньо залишку. ${stock.product_display_name}: доступно ${currentBalance}`
+                });
+            }
+
+            const unitPrice =
+                stock.realization_price !== null && stock.realization_price !== undefined
+                    ? Number(stock.realization_price || 0)
+                    : Number(stock.retail_price || 0);
+
+            const rowTotal = unitPrice * saleItem.quantity;
+
+            saleRows.push({
+                stock,
+                quantity: saleItem.quantity,
                 currentBalance,
-                requestedQuantity: quantity,
-                error: `Товару на залишку ${currentBalance}. Провести продаж?`
+                unitPrice,
+                rowTotal
             });
         }
 
-        const unitPrice = Number(stock.retail_price || 0);
-        const totalAmount = unitPrice * quantity;
-
-        const orderId = "STAFF-" + Date.now();
+        const totalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
+        const totalQuantity = saleRows.reduce((sum, row) => sum + row.quantity, 0);
 
         const paymentLabels = {
             cash: "Готівка",
             card_transfer: "Переказ на карту",
             mono_qr: "Mono QR / посилання",
-            certificate: "Сертифікат"
+            certificate: "Сертифікат",
+            certificate_cash: "Сертифікат + готівка",
+            certificate_mono_qr: "Сертифікат + Mono QR"
         };
 
         let paymentLabel = paymentLabels[paymentType] || paymentType;
@@ -1571,7 +1613,12 @@ app.post("/api/staff/create-sale", async (req, res) => {
         let certificateToUse = null;
         let certificateNote = "";
 
-        if (paymentType === "certificate") {
+        const isCertificatePayment =
+            paymentType === "certificate" ||
+            paymentType === "certificate_cash" ||
+            paymentType === "certificate_mono_qr";
+
+        if (isCertificatePayment) {
             if (!certificateCode) {
                 await connection.rollback();
 
@@ -1587,9 +1634,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
             });
 
             const sheetRows = sheetResult.data.values || [];
-            const sheetRowIndex = sheetRows.findIndex((row, idx) =>
-                idx > 0 &&
-                String(row[0] || "").trim().toUpperCase() === certificateCode
+            const sheetRowIndex = sheetRows.findIndex(
+                (row, idx) =>
+                    idx > 0 &&
+                    String(row[0] || "").trim().toUpperCase() === certificateCode
             );
 
             if (sheetRowIndex === -1) {
@@ -1663,7 +1711,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
             const certificateCoveredAmount = Math.min(certificateNominal, totalAmount);
             const certificateRestAmount = Math.max(0, totalAmount - certificateNominal);
 
-            if (certificateRestAmount > 0) {
+            if (paymentType === "certificate" && certificateRestAmount > 0) {
                 await connection.rollback();
 
                 return res.status(400).json({
@@ -1679,11 +1727,23 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
             paidAmount = totalAmount;
             dueAmount = 0;
-            paymentLabel = "Оплачено сертифікатом 100%";
+
+            if (paymentType === "certificate") {
+                paymentLabel = "Оплачено сертифікатом 100%";
+            }
+
+            if (paymentType === "certificate_cash") {
+                paymentLabel = `Сертифікат ${certificateCoveredAmount} грн + готівка ${certificateRestAmount} грн`;
+            }
+
+            if (paymentType === "certificate_mono_qr") {
+                paymentLabel = `Сертифікат ${certificateCoveredAmount} грн + Mono QR ${certificateRestAmount} грн`;
+            }
 
             certificateToUse = {
                 code: certificateCode,
                 sheetRowIndex,
+                sheetOrderIdCell: sheetRow[5] || "",
                 coveredAmount: certificateCoveredAmount,
                 nominal: certificateNominal
             };
@@ -1692,56 +1752,65 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 `, сертифікат ${certificateCode}, покрито ${certificateCoveredAmount} грн`;
         }
 
-        const itemsText =
-            `${stock.product_display_name} × ${quantity} — ${unitPrice} грн = ${totalAmount} грн`;
+        const orderId = "STAFF-" + Date.now();
 
-        await connection.query(
-            `
-            UPDATE stock_balances
-            SET sales_quantity = sales_quantity + ?
-            WHERE id = ?
-              AND warehouse_id = ?
-            `,
-            [quantity, stock.id, warehouseId]
-        );
+        const itemsText = saleRows.map(row =>
+            `${row.stock.product_display_name} × ${row.quantity} — ${row.unitPrice} грн = ${row.rowTotal} грн`
+        ).join("\n");
 
-        await connection.query(
-            `
-            INSERT INTO stock_movements
-            (
-                document_number,
-                movement_type,
-                warehouse_id,
-                warehouse_name,
-                stock_balance_id,
-                product_id,
-                product_key,
-                product_display_name,
-                quantity,
-                retail_price,
-                cost_price,
-                realization_price,
-                created_by_staff_id,
-                created_by_name
-            )
-            VALUES (?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `,
-            [
-                orderId,
-                stock.warehouse_id,
-                stock.warehouse_name,
-                stock.id,
-                stock.product_id,
-                stock.product_key,
-                stock.product_display_name,
-                quantity,
-                stock.retail_price,
-                stock.cost_price,
-                stock.realization_price,
-                staff.id,
-                staff.name
-            ]
-        );
+        for (const row of saleRows) {
+            const stock = row.stock;
+
+            await connection.query(
+                `
+                UPDATE stock_balances
+                SET sales_quantity = sales_quantity + ?
+                WHERE id = ?
+                  AND warehouse_id = ?
+                `,
+                [row.quantity, stock.id, warehouseId]
+            );
+
+            await connection.query(
+                `
+                INSERT INTO stock_movements
+                (
+                    document_number,
+                    movement_type,
+                    warehouse_id,
+                    warehouse_name,
+                    stock_balance_id,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    quantity,
+                    retail_price,
+                    cost_price,
+                    realization_price,
+                    created_by_staff_id,
+                    created_by_name
+                )
+                VALUES (?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `,
+                [
+                    orderId,
+                    stock.warehouse_id,
+                    stock.warehouse_name,
+                    stock.id,
+                    stock.product_id,
+                    stock.product_key,
+                    stock.product_display_name,
+                    row.quantity,
+                    stock.retail_price,
+                    stock.cost_price,
+                    stock.realization_price,
+                    staff.id,
+                    staff.name
+                ]
+            );
+        }
+
+        const mainWarehouseName = saleRows[0]?.stock?.warehouse_name || "";
 
         await connection.query(
             `
@@ -1770,13 +1839,13 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 "staff",
                 customer ? (customer.name || "") : "Продаж без клієнта",
                 customer ? (customer.phone || "") : "",
-                stock.warehouse_name || "",
+                mainWarehouseName,
                 itemsText,
                 totalAmount,
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${stock.warehouse_name || "—"} ID ${warehouseId}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${certificateNote}`
             ]
         );
 
@@ -1791,7 +1860,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     values: [
                         [
                             now,
-                            sheetRows[certificateToUse.sheetRowIndex][5] || "",
+                            certificateToUse.sheetOrderIdCell || "",
                             "used"
                         ],
                     ],
@@ -1831,16 +1900,25 @@ app.post("/api/staff/create-sale", async (req, res) => {
             sale: {
                 orderId,
                 warehouseId,
-                warehouseName: stock.warehouse_name,
-                productName: stock.product_display_name,
-                quantity,
-                unitPrice,
+                warehouseName: mainWarehouseName,
+                productName:
+                    saleRows.length === 1
+                        ? saleRows[0].stock.product_display_name
+                        : `${saleRows.length} товарних рядків`,
+                quantity: totalQuantity,
                 totalAmount,
                 paymentLabel,
                 customerName: customer ? customer.name : "Без клієнта",
-                stockBefore: currentBalance,
-                stockAfter: currentBalance - quantity,
-                outOfStockAllowed: currentBalance < quantity
+                itemsText,
+                items: saleRows.map(row => ({
+                    productName: row.stock.product_display_name,
+                    quantity: row.quantity,
+                    unitPrice: row.unitPrice,
+                    rowTotal: row.rowTotal,
+                    stockBefore: row.currentBalance,
+                    stockAfter: row.currentBalance - row.quantity
+                })),
+                outOfStockAllowed: saleRows.some(row => row.currentBalance < row.quantity)
             }
         });
 
