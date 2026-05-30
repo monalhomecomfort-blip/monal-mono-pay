@@ -1663,7 +1663,13 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
                     ? Number(stock.final_quantity || 0)
                     : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
 
-            if (!allowOutOfStock && currentBalance < saleItem.quantity) {
+            const isCertificateProduct = isStaffCertificateStock(stock);
+
+            if (
+                !isCertificateProduct &&
+                !allowOutOfStock &&
+                currentBalance < saleItem.quantity
+            ) {
                 outOfStockItems.push({
                     productName: stock.product_display_name,
                     currentBalance,
@@ -1678,7 +1684,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
                 quantity: saleItem.quantity,
                 currentBalance,
                 unitPrice,
-                rowTotal: unitPrice * saleItem.quantity
+                rowTotal: unitPrice * saleItem.quantity,
+                isCertificateProduct
             });
         }
 
