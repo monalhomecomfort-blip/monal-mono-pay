@@ -3935,6 +3935,11 @@ app.post("/mono-webhook", async (req, res) => {
 
             const salePayload = JSON.parse(pendingSale.sale_payload_json || "{}");
 
+            const staffPaymentType =
+                String(salePayload.paymentType || "").trim() === "certificate_mono_qr"
+                    ? "certificate_mono_qr"
+                    : "mono_qr";
+
             const createSaleResponse = await fetch(
                 "https://monal-mono-pay-production.up.railway.app/api/staff/create-sale",
                 {
@@ -3945,7 +3950,7 @@ app.post("/mono-webhook", async (req, res) => {
                     body: JSON.stringify({
                         ...salePayload,
                         orderId,
-                        paymentType: "mono_qr",
+                        paymentType: staffPaymentType,
                         allowOutOfStock: Boolean(salePayload.allowOutOfStock)
                     })
                 }
