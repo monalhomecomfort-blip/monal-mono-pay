@@ -1413,6 +1413,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const allowOutOfStock = Boolean(req.body.allowOutOfStock);
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
+        const externalOrderId = String(req.body.orderId || "").trim();
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -1762,7 +1763,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 `, сертифікат ${certificateCode}, покрито ${certificateCoveredAmount} грн`;
         }
 
-        const orderId = "STAFF-" + Date.now();
+        const orderId = externalOrderId || "STAFF-" + Date.now();
 
         const itemsText = saleRows.map(row =>
             `${row.stock.product_display_name} × ${row.quantity} — ${row.unitPrice} грн = ${row.rowTotal} грн`
