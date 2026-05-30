@@ -1401,6 +1401,253 @@ app.post("/api/staff/check-certificate", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: CREATE MONO SALE INVOICE ===================== */
+
+app.post("/api/staff/create-mono-sale", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const customerId = Number(req.body.customerId || 0);
+        const paymentType = String(req.body.paymentType || "").trim();
+        const warehouseIdFromBody = Number(req.body.warehouseId || 0);
+        const allowOutOfStock = Boolean(req.body.allowOutOfStock);
+
+        const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
+
+        if (paymentType !== "mono_qr") {
+            return res.status(400).json({
+                ok: false,
+                error: "Для цього маршруту доступна тільки оплата Mono QR"
+            });
+        }
+
+        const saleItems = bodyItems.map(item => ({
+            productId: Number(item.productId || item.product_id || 0),
+            quantity: Number(item.quantity || 0)
+        }));
+
+        if (!staffId || !saleItems.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Заповніть товари"
+            });
+        }
+
+        const invalidItem = saleItems.find(item =>
+            !item.productId ||
+            !Number.isInteger(item.quantity) ||
+            item.quantity <= 0
+        );
+
+        if (invalidItem) {
+            return res.status(400).json({
+                ok: false,
+                error: "Усі товари мають бути обрані, кількість має бути цілим числом більше 0"
+            });
+        }
+
+        const [staffRows] = await connection.query(
+            `
+            SELECT
+                id,
+                name,
+                role,
+                warehouse_id,
+                is_active
+            FROM staff_users
+            WHERE id = ?
+              AND is_active = 1
+            LIMIT 1
+            `,
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (!["admin", "manager", "partner"].includes(staff.role)) {
+            return res.status(403).json({
+                ok: false,
+                error: "Недостатньо прав для проведення продажу"
+            });
+        }
+
+        const warehouseId =
+            staff.role === "admin"
+                ? warehouseIdFromBody
+                : Number(staff.warehouse_id || 0);
+
+        if (!warehouseId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть склад продажу"
+            });
+        }
+
+        const saleRows = [];
+        const outOfStockItems = [];
+
+        for (const saleItem of saleItems) {
+            const [stockRows] = await connection.query(
+                `
+                SELECT
+                    id,
+                    warehouse_id,
+                    warehouse_name,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    retail_price,
+                    realization_price,
+                    initial_quantity,
+                    sales_quantity,
+                    final_quantity
+                FROM stock_balances
+                WHERE warehouse_id = ?
+                  AND product_id = ?
+                LIMIT 1
+                `,
+                [warehouseId, saleItem.productId]
+            );
+
+            if (!stockRows.length) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Товар не знайдено на обраному складі"
+                });
+            }
+
+            const stock = stockRows[0];
+
+            const currentBalance =
+                stock.final_quantity !== null && stock.final_quantity !== undefined
+                    ? Number(stock.final_quantity || 0)
+                    : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+
+            if (!allowOutOfStock && currentBalance < saleItem.quantity) {
+                outOfStockItems.push({
+                    productName: stock.product_display_name,
+                    currentBalance,
+                    requestedQuantity: saleItem.quantity
+                });
+            }
+
+            const unitPrice =
+                stock.realization_price !== null && stock.realization_price !== undefined
+                    ? Number(stock.realization_price || 0)
+                    : Number(stock.retail_price || 0);
+
+            saleRows.push({
+                stock,
+                quantity: saleItem.quantity,
+                currentBalance,
+                unitPrice,
+                rowTotal: unitPrice * saleItem.quantity
+            });
+        }
+
+        if (!allowOutOfStock && outOfStockItems.length) {
+            return res.status(400).json({
+                ok: false,
+                code: "out_of_stock_confirm_required",
+                outOfStockItems,
+                productName: outOfStockItems[0]?.productName || "товар",
+                currentBalance: outOfStockItems[0]?.currentBalance ?? 0,
+                requestedQuantity: outOfStockItems[0]?.requestedQuantity ?? 0,
+                error: "Недостатньо залишку по товарах у чеку"
+            });
+        }
+
+        const totalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
+
+        if (!totalAmount || totalAmount <= 0) {
+            return res.status(400).json({
+                ok: false,
+                error: "Сума продажу має бути більше 0"
+            });
+        }
+
+        const orderId = "STAFF-MONO-" + Date.now();
+
+        const salePayload = {
+            staffId,
+            customerId,
+            items: saleItems,
+            paymentType: "mono_qr",
+            warehouseId,
+            certificateCode: null,
+            allowOutOfStock,
+            orderId
+        };
+
+        const pageUrl = await createMonoPaymentPageUrl({
+            amount: totalAmount,
+            orderId,
+            destination: `Mōnal staff sale ${orderId}`
+        });
+
+        await connection.query(
+            `
+            INSERT INTO staff_mono_pending_sales
+            (
+                order_id,
+                mono_page_url,
+                staff_id,
+                warehouse_id,
+                customer_id,
+                payment_type,
+                total_amount,
+                payment_amount,
+                certificate_code,
+                allow_out_of_stock,
+                sale_payload_json,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_payment')
+            `,
+            [
+                orderId,
+                pageUrl,
+                staffId,
+                warehouseId,
+                customerId || null,
+                "mono_qr",
+                totalAmount,
+                totalAmount,
+                null,
+                allowOutOfStock ? 1 : 0,
+                JSON.stringify(salePayload)
+            ]
+        );
+
+        return res.json({
+            ok: true,
+            orderId,
+            pageUrl,
+            totalAmount,
+            paymentAmount: totalAmount
+        });
+
+    } catch (err) {
+        console.error("STAFF CREATE MONO SALE ERROR:", err.monoData || err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "Не вдалося створити Mono QR оплату"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== STAFF: CREATE SALE ===================== */
 
 app.post("/api/staff/create-sale", async (req, res) => {
