@@ -233,6 +233,16 @@ async function createPurchasedCertificate({
         expiresAt
     };
 }
+
+function isStaffCertificateStock(stock) {
+    const productKey = String(stock?.product_key || "").trim().toLowerCase();
+    const productName = String(stock?.product_display_name || "").trim().toLowerCase();
+
+    return (
+        productKey.startsWith("certificate_") ||
+        productName.includes("сертифікат")
+    );
+}
 /* ===================== CONFIG ===================== */
 
 app.use(cors({
@@ -2053,7 +2063,13 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     ? Number(stock.final_quantity || 0)
                     : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
 
-            if (!allowOutOfStock && currentBalance < saleItem.quantity) {
+            const isCertificateProduct = isStaffCertificateStock(stock);
+
+            if (
+                !isCertificateProduct &&
+                !allowOutOfStock &&
+                currentBalance < saleItem.quantity
+            ) {
                 outOfStockItems.push({
                     productName: stock.product_display_name,
                     currentBalance,
@@ -2070,7 +2086,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 quantity: saleItem.quantity,
                 currentBalance,
                 unitPrice,
-                rowTotal
+                rowTotal,
+                isCertificateProduct
             });
         }
 
@@ -2254,6 +2271,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         for (const row of saleRows) {
             const stock = row.stock;
+            
+            if (row.isCertificateProduct) {
+                continue;
+            }
 
             await connection.query(
                 `
@@ -2438,10 +2459,13 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     quantity: row.quantity,
                     unitPrice: row.unitPrice,
                     rowTotal: row.rowTotal,
-                    stockBefore: row.currentBalance,
-                    stockAfter: row.currentBalance - row.quantity
+                    stockBefore: row.isCertificateProduct ? null : row.currentBalance,
+                    stockAfter: row.isCertificateProduct ? null : row.currentBalance - row.quantity,
+                    isCertificate: Boolean(row.isCertificateProduct)
                 })),
-                outOfStockAllowed: saleRows.some(row => row.currentBalance < row.quantity),
+                outOfStockAllowed: saleRows.some(row =>
+                    !row.isCertificateProduct && row.currentBalance < row.quantity
+                ),
                 purchasedCertificates
             }
         });
