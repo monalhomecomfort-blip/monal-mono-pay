@@ -2813,6 +2813,16 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
                 0
             FROM products_catalog p
             WHERE p.is_active = 1
+              AND NOT (
+                    LOWER(TRIM(COALESCE(p.product_key, ''))) LIKE 'certificate_%'
+                    OR LOWER(TRIM(COALESCE(p.display_name, ''))) LIKE '%сертифікат%'
+                    OR LOWER(TRIM(COALESCE(p.category_slug, ''))) IN ('discovery', 'discovery-set')
+                    OR LOWER(TRIM(COALESCE(p.product_key, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(p.display_name, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(p.display_name, ''))) LIKE '%діскавер%'
+                    OR LOWER(TRIM(COALESCE(p.product_label, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(p.product_label, ''))) LIKE '%діскавер%'
+              )
             ORDER BY p.category_slug ASC, p.display_name ASC
             `,
             [nextWarehouseId, warehouseName, supplierDetails, buyerDetails, documentBasis, actCity]
