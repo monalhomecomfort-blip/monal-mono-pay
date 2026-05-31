@@ -1718,58 +1718,123 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             });
         }
 
+        const [warehouseRows] = await connection.query(
+            `
+            SELECT
+                MAX(warehouse_name) AS warehouse_name
+            FROM stock_balances
+            WHERE warehouse_id = ?
+            `,
+            [warehouseId]
+        );
+
+        const saleWarehouseName =
+            warehouseRows[0]?.warehouse_name || `Склад ${warehouseId}`;
+
         const saleRows = [];
         const outOfStockItems = [];
 
         for (const saleItem of saleItems) {
-            const [stockRows] = await connection.query(
+            const [productRows] = await connection.query(
                 `
                 SELECT
                     id,
-                    warehouse_id,
-                    warehouse_name,
-                    product_id,
                     product_key,
-                    product_display_name,
-                    retail_price,
+                    display_name,
+                    product_label,
+                    price,
+                    cost_price,
                     realization_price,
-                    initial_quantity,
-                    sales_quantity,
-                    final_quantity
-                FROM stock_balances
-                WHERE warehouse_id = ?
-                  AND product_id = ?
+                    category_slug
+                FROM products_catalog
+                WHERE id = ?
+                  AND is_active = 1
                 LIMIT 1
                 `,
-                [warehouseId, saleItem.productId]
+                [saleItem.productId]
             );
 
-            if (!stockRows.length) {
+            if (!productRows.length) {
                 return res.status(404).json({
                     ok: false,
-                    error: "Товар не знайдено на обраному складі"
+                    error: "Товар не знайдено в каталозі"
                 });
             }
 
-            const stock = stockRows[0];
+            const product = productRows[0];
 
-            const currentBalance =
-                stock.final_quantity !== null && stock.final_quantity !== undefined
-                    ? Number(stock.final_quantity || 0)
-                    : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+            const isCertificateProduct = isStaffCertificateStock(product);
+            const isDiscoveryProduct = isStaffDiscoveryProduct(product);
+            const isStockManagedProduct = isStaffStockManagedProduct(product);
 
-            const isCertificateProduct = isStaffCertificateStock(stock);
+            let stock = null;
+            let currentBalance = null;
 
-            if (
-                !isCertificateProduct &&
-                !allowOutOfStock &&
-                currentBalance < saleItem.quantity
-            ) {
-                outOfStockItems.push({
-                    productName: stock.product_display_name,
-                    currentBalance,
-                    requestedQuantity: saleItem.quantity
-                });
+            if (isStockManagedProduct) {
+                const [stockRows] = await connection.query(
+                    `
+                    SELECT
+                        id,
+                        warehouse_id,
+                        warehouse_name,
+                        product_id,
+                        product_key,
+                        product_display_name,
+                        retail_price,
+                        cost_price,
+                        realization_price,
+                        initial_quantity,
+                        sales_quantity,
+                        final_quantity
+                    FROM stock_balances
+                    WHERE warehouse_id = ?
+                      AND product_id = ?
+                    LIMIT 1
+                    `,
+                    [warehouseId, saleItem.productId]
+                );
+
+                if (!stockRows.length) {
+                    return res.status(404).json({
+                        ok: false,
+                        error: "Товар не знайдено на обраному складі"
+                    });
+                }
+
+                stock = stockRows[0];
+
+                currentBalance =
+                    stock.final_quantity !== null && stock.final_quantity !== undefined
+                        ? Number(stock.final_quantity || 0)
+                        : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+
+                if (
+                    !allowOutOfStock &&
+                    currentBalance < saleItem.quantity
+                ) {
+                    outOfStockItems.push({
+                        productName: stock.product_display_name,
+                        currentBalance,
+                        requestedQuantity: saleItem.quantity
+                    });
+                }
+            } else {
+                stock = {
+                    id: null,
+                    warehouse_id: warehouseId,
+                    warehouse_name: saleWarehouseName,
+                    product_id: product.id,
+                    product_key: product.product_key,
+                    product_display_name: product.display_name,
+                    retail_price: product.price,
+                    cost_price: product.cost_price,
+                    realization_price: product.realization_price,
+                    initial_quantity: 0,
+                    sales_quantity: 0,
+                    final_quantity: null
+                };
+
+                currentBalance = null;
             }
 
             const unitPrice = Number(stock.retail_price || 0);
@@ -1781,12 +1846,122 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
                 unitPrice,
                 rowTotal: unitPrice * saleItem.quantity,
                 isCertificateProduct,
+                isDiscoveryProduct,
+                isStockManagedProduct,
                 discoveryAromas: Array.isArray(saleItem.discoveryAromas)
                     ? saleItem.discoveryAromas
                         .map(aroma => String(aroma || "").trim())
                         .filter(Boolean)
                     : []
             });
+        }
+
+        const discoveryMovementRows = [];
+
+        const discoverySaleRows = saleRows.filter(row =>
+            row.isDiscoveryProduct &&
+            Array.isArray(row.discoveryAromas) &&
+            row.discoveryAromas.length
+        );
+
+        if (discoverySaleRows.length) {
+            const [testerRows] = await connection.query(
+                `
+                SELECT
+                    sb.id,
+                    sb.warehouse_id,
+                    sb.warehouse_name,
+                    sb.product_id,
+                    sb.product_key,
+                    sb.product_display_name,
+                    sb.retail_price,
+                    sb.cost_price,
+                    sb.realization_price,
+                    sb.initial_quantity,
+                    sb.sales_quantity,
+                    sb.final_quantity,
+                    p.product_key AS catalog_product_key,
+                    p.display_name AS catalog_display_name,
+                    p.product_label,
+                    p.category_slug
+                FROM stock_balances sb
+                LEFT JOIN products_catalog p
+                    ON p.id = sb.product_id
+                WHERE sb.warehouse_id = ?
+                `,
+                [warehouseId]
+            );
+
+            const testerStockRows = testerRows.filter(tester =>
+                isStaffTesterProduct({
+                    product_key: tester.product_key || tester.catalog_product_key,
+                    product_display_name: tester.product_display_name,
+                    display_name: tester.catalog_display_name,
+                    product_label: tester.product_label,
+                    category_slug: tester.category_slug
+                })
+            );
+
+            for (const discoveryRow of discoverySaleRows) {
+                for (const aromaName of discoveryRow.discoveryAromas) {
+                    const cleanAromaName = String(aromaName || "").trim();
+
+                    if (!cleanAromaName) {
+                        continue;
+                    }
+
+                    const testerStock = testerStockRows.find(tester =>
+                        isStaffDiscoveryAromaMatch(
+                            {
+                                product_key: tester.product_key || tester.catalog_product_key,
+                                product_display_name: tester.product_display_name,
+                                display_name: tester.catalog_display_name
+                            },
+                            cleanAromaName
+                        )
+                    );
+
+                    if (!testerStock) {
+                        return res.status(404).json({
+                            ok: false,
+                            error: `Тестер для Discovery не знайдено на обраному складі: ${cleanAromaName}`
+                        });
+                    }
+
+                    const existingMovementRow = discoveryMovementRows.find(movementRow =>
+                        Number(movementRow.stock.id || 0) === Number(testerStock.id || 0)
+                    );
+
+                    if (existingMovementRow) {
+                        existingMovementRow.quantity += 1;
+                    } else {
+                        discoveryMovementRows.push({
+                            stock: testerStock,
+                            quantity: 1
+                        });
+                    }
+                }
+            }
+
+            for (const movementRow of discoveryMovementRows) {
+                const stock = movementRow.stock;
+
+                const currentBalance =
+                    stock.final_quantity !== null && stock.final_quantity !== undefined
+                        ? Number(stock.final_quantity || 0)
+                        : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+
+                if (
+                    !allowOutOfStock &&
+                    currentBalance < movementRow.quantity
+                ) {
+                    outOfStockItems.push({
+                        productName: `${stock.product_display_name} (у Discovery)`,
+                        currentBalance,
+                        requestedQuantity: movementRow.quantity
+                    });
+                }
+            }
         }
 
         if (!allowOutOfStock && outOfStockItems.length) {
