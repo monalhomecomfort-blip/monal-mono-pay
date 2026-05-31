@@ -2114,37 +2114,94 @@ app.post("/api/staff/focus-promos-list", async (req, res) => {
             `
         );
 
+        const campaignIds = campaigns
+            .map(campaign => Number(campaign.id || 0))
+            .filter(id => Number.isInteger(id) && id > 0);
+
+        let campaignWarehouses = [];
+
+        if (campaignIds.length) {
+            const placeholders = campaignIds.map(() => "?").join(",");
+
+            const [warehouseRows] = await db.query(
+                `
+                SELECT
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id,
+                    COALESCE(
+                        MAX(sb.warehouse_name),
+                        CONCAT('Склад ID ', pcw.warehouse_id)
+                    ) AS warehouse_name
+                FROM promo_campaign_warehouses pcw
+                LEFT JOIN stock_balances sb
+                    ON sb.warehouse_id = pcw.warehouse_id
+                WHERE pcw.promo_campaign_id IN (${placeholders})
+                GROUP BY
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id
+                ORDER BY
+                    pcw.promo_campaign_id ASC,
+                    pcw.warehouse_id ASC
+                `,
+                campaignIds
+            );
+
+            campaignWarehouses = warehouseRows;
+        }
+
+        const warehousesByCampaign = new Map();
+
+        campaignWarehouses.forEach(row => {
+            const promoId = Number(row.promo_campaign_id || 0);
+
+            if (!warehousesByCampaign.has(promoId)) {
+                warehousesByCampaign.set(promoId, []);
+            }
+
+            warehousesByCampaign.get(promoId).push({
+                warehouse_id: Number(row.warehouse_id || 0),
+                warehouse_name: row.warehouse_name || `Склад ID ${row.warehouse_id}`
+            });
+        });
+
         return res.json({
             ok: true,
-            campaigns: campaigns.map(campaign => ({
-                id: campaign.id,
-                title: campaign.title,
-                promo_type: campaign.promo_type,
-                discount_percent: Number(campaign.discount_percent || 0),
-                focus_product_id: campaign.focus_product_id,
-                starts_at: campaign.starts_at,
-                ends_at: campaign.ends_at,
-                is_active: Number(campaign.is_active) === 1,
-                audience: campaign.audience,
-                exclude_certificates: Number(campaign.exclude_certificates) === 1,
-                exclude_from_personal_discount: Number(campaign.exclude_from_personal_discount) === 1,
-                combinable: Number(campaign.combinable) === 1,
-                target_apply_limit: campaign.target_apply_limit,
-                target_selection: campaign.target_selection,
-                priority: campaign.priority,
-                created_at: campaign.created_at,
-                product: campaign.focus_product_id
-                    ? {
-                        id: campaign.focus_product_id,
-                        product_key: campaign.product_key,
-                        product_name: campaign.product_name,
-                        product_label: campaign.product_label,
-                        category_slug: campaign.category_slug,
-                        price: campaign.price,
-                        display_name: campaign.display_name
-                    }
-                    : null
-            }))
+            campaigns: campaigns.map(campaign => {
+                const campaignWarehousesList =
+                    warehousesByCampaign.get(Number(campaign.id || 0)) || [];
+
+                return {
+                    id: campaign.id,
+                    title: campaign.title,
+                    promo_type: campaign.promo_type,
+                    discount_percent: Number(campaign.discount_percent || 0),
+                    focus_product_id: campaign.focus_product_id,
+                    starts_at: campaign.starts_at,
+                    ends_at: campaign.ends_at,
+                    is_active: Number(campaign.is_active) === 1,
+                    audience: campaign.audience,
+                    exclude_certificates: Number(campaign.exclude_certificates) === 1,
+                    exclude_from_personal_discount: Number(campaign.exclude_from_personal_discount) === 1,
+                    combinable: Number(campaign.combinable) === 1,
+                    target_apply_limit: campaign.target_apply_limit,
+                    target_selection: campaign.target_selection,
+                    priority: campaign.priority,
+                    created_at: campaign.created_at,
+                    warehouse_ids: campaignWarehousesList.map(warehouse => warehouse.warehouse_id),
+                    warehouses: campaignWarehousesList,
+                    product: campaign.focus_product_id
+                        ? {
+                            id: campaign.focus_product_id,
+                            product_key: campaign.product_key,
+                            product_name: campaign.product_name,
+                            product_label: campaign.product_label,
+                            category_slug: campaign.category_slug,
+                            price: campaign.price,
+                            display_name: campaign.display_name
+                        }
+                        : null
+                };
+            })
         });
 
     } catch (err) {
