@@ -4109,8 +4109,7 @@ app.post("/api/staff/sales-report", async (req, res) => {
                     const name = normalizeText(item.productName);
 
                     return (
-                        name &&
-                        !name.includes("сертиф") &&
+                        name &&                        
                         Number(item.quantity || 0) > 0
                     );
                 });
