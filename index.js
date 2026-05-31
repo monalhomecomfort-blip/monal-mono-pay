@@ -1740,11 +1740,48 @@ app.post("/api/staff/users-update", async (req, res) => {
         const targetStaffId = Number(req.body.targetStaffId || 0);
         const name = String(req.body.name || "").trim();
         const role = normalizeStaffUserRole(req.body.role);
+        const password = String(req.body.password || req.body.newPassword || "").trim();
+
         const warehouseIdRaw = req.body.warehouseId;
         const warehouseId = warehouseIdRaw === null || warehouseIdRaw === undefined || warehouseIdRaw === ""
             ? null
             : Number(warehouseIdRaw);
+
         const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        let email = null;
+        let phone = null;
+
+        const hasSeparateContacts =
+            req.body.email !== undefined ||
+            req.body.phone !== undefined;
+
+        if (hasSeparateContacts) {
+            email = normalizeCustomerEmail(req.body.email);
+
+            if (req.body.phone !== undefined && String(req.body.phone || "").trim()) {
+                phone = normalizeCustomerPhone(req.body.phone);
+
+                if (!phone) {
+                    return res.status(400).json({
+                        ok: false,
+                        error: "Некоректний номер телефону"
+                    });
+                }
+            }
+        } else {
+            const parsedLogin = parseStaffUserLogin(req.body.login);
+
+            if (parsedLogin.error) {
+                return res.status(400).json({
+                    ok: false,
+                    error: parsedLogin.error
+                });
+            }
+
+            email = parsedLogin.email;
+            phone = parsedLogin.phone;
+        }
 
         if (!adminStaffId || !targetStaffId) {
             return res.status(400).json({
@@ -1766,6 +1803,13 @@ app.post("/api/staff/users-update", async (req, res) => {
             return res.status(400).json({
                 ok: false,
                 error: "Вкажіть імʼя і роль"
+            });
+        }
+
+        if (!email && !phone) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть email або телефон"
             });
         }
 
@@ -1804,7 +1848,14 @@ app.post("/api/staff/users-update", async (req, res) => {
 
         const [existingRows] = await db.query(
             `
-            SELECT id
+            SELECT
+                id,
+                name,
+                email,
+                phone,
+                role,
+                warehouse_id,
+                is_active
             FROM staff_users
             WHERE id = ?
             LIMIT 1
@@ -1819,27 +1870,67 @@ app.post("/api/staff/users-update", async (req, res) => {
             });
         }
 
+        const uniqueError = await ensureStaffLoginIsUnique({
+            email,
+            phone,
+            excludeStaffId: targetStaffId
+        });
+
+        if (uniqueError) {
+            return res.status(400).json({
+                ok: false,
+                error: uniqueError
+            });
+        }
+
+        const updateFields = [
+            "name = ?",
+            "email = ?",
+            "phone = ?",
+            "role = ?",
+            "warehouse_id = ?",
+            "is_active = ?"
+        ];
+
+        const updateValues = [
+            name,
+            email,
+            phone,
+            role,
+            warehouseId,
+            isActive
+        ];
+
+        if (password) {
+            const hash = await bcrypt.hash(password, 10);
+
+            updateFields.push("password_hash = ?");
+            updateValues.push(hash);
+        }
+
+        updateValues.push(targetStaffId);
+
         await db.query(
             `
             UPDATE staff_users
             SET
-                name = ?,
-                role = ?,
-                warehouse_id = ?,
-                is_active = ?
+                ${updateFields.join(",\n                ")}
             WHERE id = ?
             `,
-            [
-                name,
-                role,
-                warehouseId,
-                isActive,
-                targetStaffId
-            ]
+            updateValues
         );
 
         return res.json({
-            ok: true
+            ok: true,
+            user: {
+                id: targetStaffId,
+                name,
+                email,
+                phone,
+                role,
+                warehouse_id: warehouseId,
+                is_active: isActive === 1
+            }
         });
 
     } catch (err) {
