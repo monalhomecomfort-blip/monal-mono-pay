@@ -2142,62 +2142,128 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         await connection.beginTransaction();
 
+        const [warehouseRows] = await connection.query(
+            `
+            SELECT
+                MAX(warehouse_name) AS warehouse_name
+            FROM stock_balances
+            WHERE warehouse_id = ?
+            `,
+            [warehouseId]
+        );
+
+        const saleWarehouseName =
+            warehouseRows[0]?.warehouse_name || `Склад ${warehouseId}`;
+
         const saleRows = [];
         const outOfStockItems = [];
 
         for (const saleItem of saleItems) {
-            const [stockRows] = await connection.query(
+            const [productRows] = await connection.query(
                 `
                 SELECT
                     id,
-                    warehouse_id,
-                    warehouse_name,
-                    product_id,
                     product_key,
-                    product_display_name,
-                    retail_price,
+                    display_name,
+                    product_label,
+                    price,
                     cost_price,
                     realization_price,
-                    initial_quantity,
-                    sales_quantity,
-                    final_quantity
-                FROM stock_balances
-                WHERE warehouse_id = ?
-                  AND product_id = ?
+                    category_slug
+                FROM products_catalog
+                WHERE id = ?
+                  AND is_active = 1
                 LIMIT 1
-                FOR UPDATE
                 `,
-                [warehouseId, saleItem.productId]
+                [saleItem.productId]
             );
 
-            if (!stockRows.length) {
+            if (!productRows.length) {
                 await connection.rollback();
 
                 return res.status(404).json({
                     ok: false,
-                    error: "Товар не знайдено на обраному складі"
+                    error: "Товар не знайдено в каталозі"
                 });
             }
 
-            const stock = stockRows[0];
+            const product = productRows[0];
 
-            const currentBalance =
-                stock.final_quantity !== null && stock.final_quantity !== undefined
-                    ? Number(stock.final_quantity || 0)
-                    : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+            const isCertificateProduct = isStaffCertificateStock(product);
+            const isDiscoveryProduct = isStaffDiscoveryProduct(product);
+            const isStockManagedProduct = isStaffStockManagedProduct(product);
 
-            const isCertificateProduct = isStaffCertificateStock(stock);
+            let stock = null;
+            let currentBalance = null;
 
-            if (
-                !isCertificateProduct &&
-                !allowOutOfStock &&
-                currentBalance < saleItem.quantity
-            ) {
-                outOfStockItems.push({
-                    productName: stock.product_display_name,
-                    currentBalance,
-                    requestedQuantity: saleItem.quantity
-                });
+            if (isStockManagedProduct) {
+                const [stockRows] = await connection.query(
+                    `
+                    SELECT
+                        id,
+                        warehouse_id,
+                        warehouse_name,
+                        product_id,
+                        product_key,
+                        product_display_name,
+                        retail_price,
+                        cost_price,
+                        realization_price,
+                        initial_quantity,
+                        sales_quantity,
+                        final_quantity
+                    FROM stock_balances
+                    WHERE warehouse_id = ?
+                      AND product_id = ?
+                    LIMIT 1
+                    FOR UPDATE
+                    `,
+                    [warehouseId, saleItem.productId]
+                );
+
+                if (!stockRows.length) {
+                    await connection.rollback();
+
+                    return res.status(404).json({
+                        ok: false,
+                        error: "Товар не знайдено на обраному складі"
+                    });
+                }
+
+                stock = stockRows[0];
+
+                currentBalance =
+                    stock.final_quantity !== null && stock.final_quantity !== undefined
+                        ? Number(stock.final_quantity || 0)
+                        : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+
+                if (
+                    !allowOutOfStock &&
+                    currentBalance < saleItem.quantity
+                ) {
+                    outOfStockItems.push({
+                        productName: stock.product_display_name,
+                        currentBalance,
+                        requestedQuantity: saleItem.quantity
+                    });
+                }
+            } else {
+                stock = {
+                    id: null,
+                    warehouse_id: warehouseId,
+                    warehouse_name: saleWarehouseName,
+                    product_id: product.id,
+                    product_key: product.product_key,
+                    product_display_name: product.display_name,
+                    retail_price: product.price,
+                    cost_price: product.cost_price,
+                    realization_price: product.realization_price,
+                    initial_quantity: 0,
+                    sales_quantity: 0,
+                    final_quantity: null
+                };
+
+                currentBalance = null;
             }
 
             const unitPrice = Number(stock.retail_price || 0);
@@ -2211,6 +2277,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 unitPrice,
                 rowTotal,
                 isCertificateProduct,
+                isDiscoveryProduct,
+                isStockManagedProduct,
                 discoveryAromas: Array.isArray(saleItem.discoveryAromas)
                     ? saleItem.discoveryAromas
                         .map(aroma => String(aroma || "").trim())
@@ -2435,7 +2503,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         for (const row of saleRows) {
             const stock = row.stock;
             
-            if (row.isCertificateProduct) {
+            if (!row.isStockManagedProduct) {
                 continue;
             }
 
