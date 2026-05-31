@@ -2500,6 +2500,131 @@ app.post("/api/staff/create-sale", async (req, res) => {
             `${getStaffSaleProductText(row)} × ${row.quantity} — ${row.unitPrice} грн = ${row.rowTotal} грн`
         ).join("\n");
 
+        const discoveryMovementRows = [];
+
+        const discoverySaleRows = saleRows.filter(row =>
+            row.isDiscoveryProduct &&
+            Array.isArray(row.discoveryAromas) &&
+            row.discoveryAromas.length
+        );
+
+        if (discoverySaleRows.length) {
+            const [testerRows] = await connection.query(
+                `
+                SELECT
+                    sb.id,
+                    sb.warehouse_id,
+                    sb.warehouse_name,
+                    sb.product_id,
+                    sb.product_key,
+                    sb.product_display_name,
+                    sb.retail_price,
+                    sb.cost_price,
+                    sb.realization_price,
+                    sb.initial_quantity,
+                    sb.sales_quantity,
+                    sb.final_quantity,
+                    p.product_key AS catalog_product_key,
+                    p.display_name AS catalog_display_name,
+                    p.product_label,
+                    p.category_slug
+                FROM stock_balances sb
+                LEFT JOIN products_catalog p
+                    ON p.id = sb.product_id
+                WHERE sb.warehouse_id = ?
+                FOR UPDATE
+                `,
+                [warehouseId]
+            );
+
+            const testerStockRows = testerRows.filter(tester =>
+                isStaffTesterProduct({
+                    product_key: tester.product_key || tester.catalog_product_key,
+                    product_display_name: tester.product_display_name,
+                    display_name: tester.catalog_display_name,
+                    product_label: tester.product_label,
+                    category_slug: tester.category_slug
+                })
+            );
+
+            for (const discoveryRow of discoverySaleRows) {
+                for (const aromaName of discoveryRow.discoveryAromas) {
+                    const cleanAromaName = String(aromaName || "").trim();
+
+                    if (!cleanAromaName) {
+                        continue;
+                    }
+
+                    const testerStock = testerStockRows.find(tester =>
+                        isStaffDiscoveryAromaMatch(
+                            {
+                                product_key: tester.product_key || tester.catalog_product_key,
+                                product_display_name: tester.product_display_name,
+                                display_name: tester.catalog_display_name
+                            },
+                            cleanAromaName
+                        )
+                    );
+
+                    if (!testerStock) {
+                        await connection.rollback();
+
+                        return res.status(404).json({
+                            ok: false,
+                            error: `Тестер для Discovery не знайдено на обраному складі: ${cleanAromaName}`
+                        });
+                    }
+
+                    const existingMovementRow = discoveryMovementRows.find(movementRow =>
+                        Number(movementRow.stock.id || 0) === Number(testerStock.id || 0)
+                    );
+
+                    if (existingMovementRow) {
+                        existingMovementRow.quantity += 1;
+                    } else {
+                        discoveryMovementRows.push({
+                            stock: testerStock,
+                            quantity: 1
+                        });
+                    }
+                }
+            }
+
+            for (const movementRow of discoveryMovementRows) {
+                const stock = movementRow.stock;
+
+                const currentBalance =
+                    stock.final_quantity !== null && stock.final_quantity !== undefined
+                        ? Number(stock.final_quantity || 0)
+                        : Number(stock.initial_quantity || 0) - Number(stock.sales_quantity || 0);
+
+                if (
+                    !allowOutOfStock &&
+                    currentBalance < movementRow.quantity
+                ) {
+                    outOfStockItems.push({
+                        productName: `${stock.product_display_name} (у Discovery)`,
+                        currentBalance,
+                        requestedQuantity: movementRow.quantity
+                    });
+                }
+            }
+
+            if (!allowOutOfStock && outOfStockItems.length) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    code: "out_of_stock_confirm_required",
+                    outOfStockItems,
+                    productName: outOfStockItems[0]?.productName || "товар",
+                    currentBalance: outOfStockItems[0]?.currentBalance ?? 0,
+                    requestedQuantity: outOfStockItems[0]?.requestedQuantity ?? 0,
+                    error: "Недостатньо залишку по товарах у чеку"
+                });
+            }
+        }
+
         for (const row of saleRows) {
             const stock = row.stock;
             
@@ -2547,6 +2672,58 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     stock.product_key,
                     stock.product_display_name,
                     row.quantity,
+                    stock.retail_price,
+                    stock.cost_price,
+                    stock.realization_price,
+                    staff.id,
+                    staff.name
+                ]
+            );
+        }
+
+        for (const movementRow of discoveryMovementRows) {
+            const stock = movementRow.stock;
+
+            await connection.query(
+                `
+                UPDATE stock_balances
+                SET sales_quantity = sales_quantity + ?
+                WHERE id = ?
+                  AND warehouse_id = ?
+                `,
+                [movementRow.quantity, stock.id, warehouseId]
+            );
+
+            await connection.query(
+                `
+                INSERT INTO stock_movements
+                (
+                    document_number,
+                    movement_type,
+                    warehouse_id,
+                    warehouse_name,
+                    stock_balance_id,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    quantity,
+                    retail_price,
+                    cost_price,
+                    realization_price,
+                    created_by_staff_id,
+                    created_by_name
+                )
+                VALUES (?, 'sale_discovery', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `,
+                [
+                    orderId,
+                    stock.warehouse_id,
+                    stock.warehouse_name,
+                    stock.id,
+                    stock.product_id,
+                    stock.product_key,
+                    `${stock.product_display_name} (у Discovery)`,
+                    movementRow.quantity,
                     stock.retail_price,
                     stock.cost_price,
                     stock.realization_price,
