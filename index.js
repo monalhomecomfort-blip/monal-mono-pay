@@ -2172,6 +2172,16 @@ app.post("/api/staff/focus-promo-save", async (req, res) => {
         const replaceConflicts = Boolean(req.body.replaceConflicts);
         const priority = Number(req.body.priority || 10);
 
+        const warehouseIds = Array.isArray(req.body.warehouseIds)
+            ? [
+                ...new Set(
+                    req.body.warehouseIds
+                        .map(id => Number(id || 0))
+                        .filter(id => Number.isInteger(id) && id > 0)
+                )
+            ]
+            : [];
+
         if (!staffId) {
             connection.release();
 
@@ -2388,10 +2398,36 @@ app.post("/api/staff/focus-promo-save", async (req, res) => {
             savedPromoId = result.insertId;
         }
 
+        await connection.query(
+            `
+            DELETE FROM promo_campaign_warehouses
+            WHERE promo_campaign_id = ?
+            `,
+            [savedPromoId]
+        );
+
+        if (warehouseIds.length) {
+            await connection.query(
+                `
+                INSERT INTO promo_campaign_warehouses
+                (
+                    promo_campaign_id,
+                    warehouse_id
+                )
+                VALUES ?
+                `,
+                [
+                    warehouseIds.map(warehouseId => [
+                        savedPromoId,
+                        warehouseId
+                    ])
+                ]
+            );
+        }
+
         await connection.commit();
 
         clearPublicPromoCampaignsCache();
-
         connection.release();
 
         return res.json({
