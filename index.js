@@ -234,13 +234,103 @@ async function createPurchasedCertificate({
     };
 }
 
-function isStaffCertificateStock(stock) {
-    const productKey = String(stock?.product_key || "").trim().toLowerCase();
-    const productName = String(stock?.product_display_name || "").trim().toLowerCase();
+function isStaffCertificateStock(product) {
+    const productKey = String(product?.product_key || "").trim().toLowerCase();
+    const productName = String(
+        product?.product_display_name ||
+        product?.display_name ||
+        product?.product_name ||
+        ""
+    ).trim().toLowerCase();
 
     return (
         productKey.startsWith("certificate_") ||
         productName.includes("сертифікат")
+    );
+}
+
+function isStaffDiscoveryProduct(product) {
+    const productKey = String(product?.product_key || "").trim().toLowerCase();
+    const productName = String(
+        product?.product_display_name ||
+        product?.display_name ||
+        product?.product_name ||
+        ""
+    ).trim().toLowerCase();
+    const productLabel = String(product?.product_label || "").trim().toLowerCase();
+    const categorySlug = String(product?.category_slug || "").trim().toLowerCase();
+
+    return (
+        categorySlug === "discovery" ||
+        categorySlug === "discovery-set" ||
+        productKey.includes("discovery") ||
+        productName.includes("discovery") ||
+        productName.includes("діскавер") ||
+        productLabel.includes("discovery") ||
+        productLabel.includes("діскавер")
+    );
+}
+
+function isStaffTesterProduct(product) {
+    const productKey = String(product?.product_key || "").trim().toLowerCase();
+    const productName = String(
+        product?.product_display_name ||
+        product?.display_name ||
+        product?.product_name ||
+        ""
+    ).trim().toLowerCase();
+    const productLabel = String(product?.product_label || "").trim().toLowerCase();
+    const categorySlug = String(product?.category_slug || "").trim().toLowerCase();
+
+    return (
+        productKey.startsWith("tester_") ||
+        categorySlug.includes("tester") ||
+        categorySlug.includes("testers") ||
+        productLabel.includes("тестер") ||
+        productName.includes("тестер")
+    );
+}
+
+function isStaffStockManagedProduct(product) {
+    return (
+        !isStaffCertificateStock(product) &&
+        !isStaffDiscoveryProduct(product)
+    );
+}
+
+function normalizeStaffAromaText(value) {
+    return String(value || "")
+        .toLowerCase()
+        .replace(/ё/g, "е")
+        .replace(/[’ʼ']/g, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\btester\b/g, "")
+        .replace(/\btesters\b/g, "")
+        .replace(/тестер/g, "")
+        .replace(/\b3\s*ml\b/g, "")
+        .replace(/\b3\s*мл\b/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function isStaffDiscoveryAromaMatch(product, aromaName) {
+    const aroma = normalizeStaffAromaText(aromaName);
+    const productName = normalizeStaffAromaText(
+        product?.product_display_name ||
+        product?.display_name ||
+        product?.product_name ||
+        ""
+    );
+    const productKey = normalizeStaffAromaText(product?.product_key || "");
+
+    if (!aroma) return false;
+
+    return (
+        productName === aroma ||
+        productKey === aroma ||
+        productName.includes(aroma) ||
+        aroma.includes(productName) ||
+        productKey.includes(aroma)
     );
 }
 /* ===================== CONFIG ===================== */
