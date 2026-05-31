@@ -2266,7 +2266,7 @@ app.post("/api/staff/focus-promo-save", async (req, res) => {
                     exclude_from_personal_discount = 1,
                     combinable = 0,
                     target_apply_limit = NULL,
-                    target_selection = NULL,
+                    target_selection = 'cheapest',
                     priority = ?
                 WHERE id = ?
                   AND promo_type = 'focus_product'
@@ -2303,7 +2303,7 @@ app.post("/api/staff/focus-promo-save", async (req, res) => {
                     target_selection,
                     priority
                 )
-                VALUES (?, 'focus_product', ?, ?, ?, ?, ?, NOW(), 'public', 1, 1, 0, NULL, NULL, ?)
+                VALUES (?, 'focus_product', ?, ?, ?, ?, ?, NOW(), 'public', 1, 1, 0, NULL, 'cheapest', ?)
                 `,
                 [
                     title,
