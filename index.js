@@ -1943,6 +1943,412 @@ app.post("/api/staff/users-update", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: FOCUS PROMO CAMPAIGNS ===================== */
+
+function clearPublicPromoCampaignsCache() {
+    PUBLIC_PROMO_CAMPAIGNS_CACHE = {
+        expiresAt: 0,
+        campaigns: []
+    };
+}
+
+async function findFocusPromoConflicts({
+    connection = db,
+    promoId = 0,
+    startsAt,
+    endsAt
+}) {
+    const [conflicts] = await connection.query(
+        `
+        SELECT
+            c.id,
+            c.title,
+            c.starts_at,
+            c.ends_at,
+            c.focus_product_id,
+            p.display_name,
+            p.product_name,
+            p.product_label
+        FROM promo_campaigns c
+        LEFT JOIN products_catalog p
+            ON p.id = c.focus_product_id
+        WHERE c.promo_type = 'focus_product'
+          AND c.audience = 'public'
+          AND c.is_active = 1
+          AND c.id <> ?
+          AND COALESCE(c.starts_at, '1000-01-01 00:00:00') <= ?
+          AND COALESCE(c.ends_at, '9999-12-31 23:59:59') >= ?
+        ORDER BY c.starts_at ASC, c.id ASC
+        `,
+        [
+            promoId,
+            endsAt,
+            startsAt
+        ]
+    );
+
+    return conflicts;
+}
+
+app.post("/api/staff/focus-promos-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        const [campaigns] = await db.query(
+            `
+            SELECT
+                c.id,
+                c.title,
+                c.promo_type,
+                c.discount_percent,
+                c.focus_product_id,
+                c.starts_at,
+                c.ends_at,
+                c.is_active,
+                c.audience,
+                c.exclude_certificates,
+                c.exclude_from_personal_discount,
+                c.combinable,
+                c.target_apply_limit,
+                c.target_selection,
+                c.priority,
+                c.created_at,
+
+                p.product_key,
+                p.product_name,
+                p.product_label,
+                p.category_slug,
+                p.price,
+                p.display_name
+            FROM promo_campaigns c
+            LEFT JOIN products_catalog p
+                ON p.id = c.focus_product_id
+            WHERE c.promo_type = 'focus_product'
+              AND c.audience = 'public'
+            ORDER BY c.starts_at DESC, c.id DESC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            campaigns: campaigns.map(campaign => ({
+                id: campaign.id,
+                title: campaign.title,
+                promo_type: campaign.promo_type,
+                discount_percent: Number(campaign.discount_percent || 0),
+                focus_product_id: campaign.focus_product_id,
+                starts_at: campaign.starts_at,
+                ends_at: campaign.ends_at,
+                is_active: Number(campaign.is_active) === 1,
+                audience: campaign.audience,
+                exclude_certificates: Number(campaign.exclude_certificates) === 1,
+                exclude_from_personal_discount: Number(campaign.exclude_from_personal_discount) === 1,
+                combinable: Number(campaign.combinable) === 1,
+                target_apply_limit: campaign.target_apply_limit,
+                target_selection: campaign.target_selection,
+                priority: campaign.priority,
+                created_at: campaign.created_at,
+                product: campaign.focus_product_id
+                    ? {
+                        id: campaign.focus_product_id,
+                        product_key: campaign.product_key,
+                        product_name: campaign.product_name,
+                        product_label: campaign.product_label,
+                        category_slug: campaign.category_slug,
+                        price: campaign.price,
+                        display_name: campaign.display_name
+                    }
+                    : null
+            }))
+        });
+
+    } catch (err) {
+        console.error("STAFF FOCUS PROMOS LIST ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/focus-promo-save", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const promoId = Number(req.body.promoId || 0);
+        const title = String(req.body.title || "Аромат дня").trim();
+        const productId = Number(req.body.productId || 0);
+        const discountPercent = Number(req.body.discountPercent || 0);
+        const startsAt = String(req.body.startsAt || "").trim();
+        const endsAt = String(req.body.endsAt || "").trim();
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+        const replaceConflicts = Boolean(req.body.replaceConflicts);
+        const priority = Number(req.body.priority || 10);
+
+        if (!staffId) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            connection.release();
+
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!title || !productId || !discountPercent || !startsAt || !endsAt) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву, товар, знижку, дату старту і дату завершення"
+            });
+        }
+
+        if (discountPercent <= 0 || discountPercent >= 100) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Знижка має бути більше 0 і менше 100"
+            });
+        }
+
+        const startsTime = new Date(startsAt).getTime();
+        const endsTime = new Date(endsAt).getTime();
+
+        if (!Number.isFinite(startsTime) || !Number.isFinite(endsTime) || startsTime >= endsTime) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректний період дії промо-кампанії"
+            });
+        }
+
+        const [productRows] = await connection.query(
+            `
+            SELECT
+                id,
+                product_key,
+                display_name,
+                product_name,
+                product_label,
+                category_slug,
+                price,
+                is_active
+            FROM products_catalog
+            WHERE id = ?
+              AND is_active = 1
+            LIMIT 1
+            `,
+            [productId]
+        );
+
+        if (!productRows.length) {
+            connection.release();
+
+            return res.status(404).json({
+                ok: false,
+                error: "Товар не знайдено в products_catalog або товар неактивний"
+            });
+        }
+
+        if (promoId) {
+            const [existingRows] = await connection.query(
+                `
+                SELECT id
+                FROM promo_campaigns
+                WHERE id = ?
+                  AND promo_type = 'focus_product'
+                  AND audience = 'public'
+                LIMIT 1
+                `,
+                [promoId]
+            );
+
+            if (!existingRows.length) {
+                connection.release();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Промо-кампанію Аромат дня не знайдено"
+                });
+            }
+        }
+
+        let conflicts = [];
+
+        if (isActive === 1) {
+            conflicts = await findFocusPromoConflicts({
+                connection,
+                promoId,
+                startsAt,
+                endsAt
+            });
+
+            if (conflicts.length && !replaceConflicts) {
+                connection.release();
+
+                return res.status(409).json({
+                    ok: false,
+                    code: "focus_promo_period_conflict",
+                    error: "У цей період уже є активна промо-кампанія Аромат дня",
+                    conflicts
+                });
+            }
+        }
+
+        await connection.beginTransaction();
+
+        if (isActive === 1 && conflicts.length && replaceConflicts) {
+            await connection.query(
+                `
+                UPDATE promo_campaigns
+                SET is_active = 0
+                WHERE promo_type = 'focus_product'
+                  AND audience = 'public'
+                  AND id <> ?
+                  AND is_active = 1
+                  AND COALESCE(starts_at, '1000-01-01 00:00:00') <= ?
+                  AND COALESCE(ends_at, '9999-12-31 23:59:59') >= ?
+                `,
+                [
+                    promoId,
+                    endsAt,
+                    startsAt
+                ]
+            );
+        }
+
+        let savedPromoId = promoId;
+
+        if (promoId) {
+            await connection.query(
+                `
+                UPDATE promo_campaigns
+                SET
+                    title = ?,
+                    discount_percent = ?,
+                    focus_product_id = ?,
+                    starts_at = ?,
+                    ends_at = ?,
+                    is_active = ?,
+                    audience = 'public',
+                    exclude_certificates = 1,
+                    exclude_from_personal_discount = 1,
+                    combinable = 0,
+                    target_apply_limit = NULL,
+                    target_selection = NULL,
+                    priority = ?
+                WHERE id = ?
+                  AND promo_type = 'focus_product'
+                `,
+                [
+                    title,
+                    discountPercent,
+                    productId,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    priority,
+                    promoId
+                ]
+            );
+        } else {
+            const [result] = await connection.query(
+                `
+                INSERT INTO promo_campaigns
+                (
+                    title,
+                    promo_type,
+                    discount_percent,
+                    focus_product_id,
+                    starts_at,
+                    ends_at,
+                    is_active,
+                    created_at,
+                    audience,
+                    exclude_certificates,
+                    exclude_from_personal_discount,
+                    combinable,
+                    target_apply_limit,
+                    target_selection,
+                    priority
+                )
+                VALUES (?, 'focus_product', ?, ?, ?, ?, ?, NOW(), 'public', 1, 1, 0, NULL, NULL, ?)
+                `,
+                [
+                    title,
+                    discountPercent,
+                    productId,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    priority
+                ]
+            );
+
+            savedPromoId = result.insertId;
+        }
+
+        await connection.commit();
+
+        clearPublicPromoCampaignsCache();
+
+        connection.release();
+
+        return res.json({
+            ok: true,
+            promoId: savedPromoId,
+            disabledConflicts: conflicts.map(conflict => conflict.id)
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error("STAFF FOCUS PROMO ROLLBACK ERROR:", rollbackErr);
+        }
+
+        connection.release();
+
+        console.error("STAFF FOCUS PROMO SAVE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: GET PRODUCTS ===================== */
 
 app.post("/api/staff/products", async (req, res) => {
