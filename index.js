@@ -1114,6 +1114,75 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
     }
 });
 
+async function calculateStaffFocusProductDiscount(connection, saleRows) {
+    const [campaignRows] = await connection.query(
+        `
+        SELECT
+            id,
+            title,
+            focus_product_id,
+            discount_percent
+        FROM promo_campaigns
+        WHERE is_active = 1
+          AND audience = 'public'
+          AND promo_type = 'focus_product'
+          AND focus_product_id IS NOT NULL
+          AND (starts_at IS NULL OR starts_at <= NOW())
+          AND (ends_at IS NULL OR ends_at >= NOW())
+        ORDER BY priority ASC, id DESC
+        LIMIT 10
+        `
+    );
+
+    if (!campaignRows.length) {
+        return {
+            discountAmount: 0,
+            note: ""
+        };
+    }
+
+    let discountAmount = 0;
+    const notes = [];
+
+    saleRows.forEach(row => {
+        const productId = Number(row?.stock?.product_id || 0);
+
+        if (!productId) return;
+
+        const campaign = campaignRows.find(item =>
+            Number(item.focus_product_id || 0) === productId
+        );
+
+        if (!campaign) return;
+
+        const percent = Number(campaign.discount_percent || 0);
+
+        if (percent <= 0) return;
+
+        const rowTotal = Number(row.rowTotal || 0);
+
+        if (rowTotal <= 0) return;
+
+        const rowDiscount = Math.min(
+            rowTotal,
+            Math.round(rowTotal * (percent / 100))
+        );
+
+        if (rowDiscount <= 0) return;
+
+        discountAmount += rowDiscount;
+
+        notes.push(
+            `${campaign.title || "Аромат дня"} ${percent}%: -${rowDiscount} грн`
+        );
+    });
+
+    return {
+        discountAmount,
+        note: notes.length ? notes.join("; ") : ""
+    };
+}
+
 /* ===================== GET ACTIVE PERSONAL OFFERS ===================== */
 app.get("/api/personal-offers", async (req, res) => {
     try {
