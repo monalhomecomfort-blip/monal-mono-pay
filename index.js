@@ -1406,6 +1406,452 @@ app.post("/api/staff/create-customer", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: USERS MANAGEMENT ===================== */
+
+async function getAdminStaffOrDeny(staffId) {
+    const [staffRows] = await db.query(
+        `
+        SELECT
+            id,
+            role,
+            is_active
+        FROM staff_users
+        WHERE id = ?
+          AND is_active = 1
+        LIMIT 1
+        `,
+        [staffId]
+    );
+
+    if (!staffRows.length) {
+        return {
+            ok: false,
+            status: 403,
+            error: "staff access denied"
+        };
+    }
+
+    const staff = staffRows[0];
+
+    if (staff.role !== "admin") {
+        return {
+            ok: false,
+            status: 403,
+            error: "admin only"
+        };
+    }
+
+    return {
+        ok: true,
+        staff
+    };
+}
+
+function normalizeStaffUserRole(roleRaw) {
+    const role = String(roleRaw || "").trim().toLowerCase();
+
+    return ["admin", "manager", "partner"].includes(role)
+        ? role
+        : null;
+}
+
+function parseStaffUserLogin(loginRaw) {
+    const login = String(loginRaw || "").trim();
+
+    if (!login) {
+        return {
+            email: null,
+            phone: null,
+            error: "Вкажіть email або телефон"
+        };
+    }
+
+    if (login.includes("@")) {
+        const email = normalizeCustomerEmail(login);
+
+        if (!email) {
+            return {
+                email: null,
+                phone: null,
+                error: "Некоректний email"
+            };
+        }
+
+        return {
+            email,
+            phone: null,
+            error: null
+        };
+    }
+
+    const phone = normalizeCustomerPhone(login);
+
+    if (!phone) {
+        return {
+            email: null,
+            phone: null,
+            error: "Некоректний номер телефону"
+        };
+    }
+
+    return {
+        email: null,
+        phone,
+        error: null
+    };
+}
+
+async function ensureStaffLoginIsUnique({ email, phone, excludeStaffId = 0 }) {
+    if (email) {
+        const [rows] = await db.query(
+            `
+            SELECT id
+            FROM staff_users
+            WHERE LOWER(COALESCE(email, '')) = ?
+              AND id <> ?
+            LIMIT 1
+            `,
+            [email, excludeStaffId]
+        );
+
+        if (rows.length) {
+            return "Цей email вже використовується staff-користувачем";
+        }
+    }
+
+    if (phone) {
+        const [rows] = await db.query(
+            `
+            SELECT id
+            FROM staff_users
+            WHERE phone = ?
+              AND id <> ?
+            LIMIT 1
+            `,
+            [phone, excludeStaffId]
+        );
+
+        if (rows.length) {
+            return "Цей телефон вже використовується staff-користувачем";
+        }
+    }
+
+    return null;
+}
+
+app.post("/api/staff/users-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        const [users] = await db.query(
+            `
+            SELECT
+                su.id,
+                su.name,
+                su.email,
+                su.phone,
+                su.role,
+                su.warehouse_id,
+                su.is_active,
+                (
+                    SELECT MAX(sb.warehouse_name)
+                    FROM stock_balances sb
+                    WHERE sb.warehouse_id = su.warehouse_id
+                ) AS warehouse_name
+            FROM staff_users su
+            ORDER BY su.is_active DESC, su.role ASC, su.name ASC, su.id ASC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            users: users.map(user => ({
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                role: user.role,
+                warehouse_id: user.warehouse_id,
+                warehouse_name: user.warehouse_name,
+                is_active: Number(user.is_active) === 1
+            }))
+        });
+
+    } catch (err) {
+        console.error("STAFF USERS LIST ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/users-create", async (req, res) => {
+    try {
+        const adminStaffId = Number(req.body.staffId || 0);
+        const name = String(req.body.name || "").trim();
+        const login = String(req.body.login || "").trim();
+        const password = String(req.body.password || "").trim();
+        const role = normalizeStaffUserRole(req.body.role);
+        const warehouseIdRaw = req.body.warehouseId;
+        const warehouseId = warehouseIdRaw === null || warehouseIdRaw === undefined || warehouseIdRaw === ""
+            ? null
+            : Number(warehouseIdRaw);
+
+        if (!adminStaffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(adminStaffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!name || !password || !role) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть імʼя, пароль і роль"
+            });
+        }
+
+        if (warehouseIdRaw !== null && warehouseIdRaw !== undefined && warehouseIdRaw !== "" && !warehouseId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректний склад"
+            });
+        }
+
+        const parsedLogin = parseStaffUserLogin(login);
+
+        if (parsedLogin.error) {
+            return res.status(400).json({
+                ok: false,
+                error: parsedLogin.error
+            });
+        }
+
+        const uniqueError = await ensureStaffLoginIsUnique({
+            email: parsedLogin.email,
+            phone: parsedLogin.phone
+        });
+
+        if (uniqueError) {
+            return res.status(400).json({
+                ok: false,
+                error: uniqueError
+            });
+        }
+
+        if (warehouseId) {
+            const [warehouseRows] = await db.query(
+                `
+                SELECT warehouse_id
+                FROM stock_balances
+                WHERE warehouse_id = ?
+                LIMIT 1
+                `,
+                [warehouseId]
+            );
+
+            if (!warehouseRows.length) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Склад не знайдено"
+                });
+            }
+        }
+
+        const hash = await bcrypt.hash(password, 10);
+
+        const [result] = await db.query(
+            `
+            INSERT INTO staff_users
+            (
+                name,
+                email,
+                phone,
+                password_hash,
+                role,
+                warehouse_id,
+                is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+            `,
+            [
+                name,
+                parsedLogin.email,
+                parsedLogin.phone,
+                hash,
+                role,
+                warehouseId
+            ]
+        );
+
+        return res.json({
+            ok: true,
+            user: {
+                id: result.insertId,
+                name,
+                email: parsedLogin.email,
+                phone: parsedLogin.phone,
+                role,
+                warehouse_id: warehouseId,
+                is_active: true
+            }
+        });
+
+    } catch (err) {
+        console.error("STAFF USERS CREATE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/users-update", async (req, res) => {
+    try {
+        const adminStaffId = Number(req.body.staffId || 0);
+        const targetStaffId = Number(req.body.targetStaffId || 0);
+        const name = String(req.body.name || "").trim();
+        const role = normalizeStaffUserRole(req.body.role);
+        const warehouseIdRaw = req.body.warehouseId;
+        const warehouseId = warehouseIdRaw === null || warehouseIdRaw === undefined || warehouseIdRaw === ""
+            ? null
+            : Number(warehouseIdRaw);
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        if (!adminStaffId || !targetStaffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staff ids"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(adminStaffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!name || !role) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть імʼя і роль"
+            });
+        }
+
+        if (adminStaffId === targetStaffId && (role !== "admin" || isActive !== 1)) {
+            return res.status(400).json({
+                ok: false,
+                error: "Не можна зняти адмін-доступ або деактивувати свій акаунт"
+            });
+        }
+
+        if (warehouseIdRaw !== null && warehouseIdRaw !== undefined && warehouseIdRaw !== "" && !warehouseId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректний склад"
+            });
+        }
+
+        if (warehouseId) {
+            const [warehouseRows] = await db.query(
+                `
+                SELECT warehouse_id
+                FROM stock_balances
+                WHERE warehouse_id = ?
+                LIMIT 1
+                `,
+                [warehouseId]
+            );
+
+            if (!warehouseRows.length) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Склад не знайдено"
+                });
+            }
+        }
+
+        const [existingRows] = await db.query(
+            `
+            SELECT id
+            FROM staff_users
+            WHERE id = ?
+            LIMIT 1
+            `,
+            [targetStaffId]
+        );
+
+        if (!existingRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Staff user не знайдений"
+            });
+        }
+
+        await db.query(
+            `
+            UPDATE staff_users
+            SET
+                name = ?,
+                role = ?,
+                warehouse_id = ?,
+                is_active = ?
+            WHERE id = ?
+            `,
+            [
+                name,
+                role,
+                warehouseId,
+                isActive,
+                targetStaffId
+            ]
+        );
+
+        return res.json({
+            ok: true
+        });
+
+    } catch (err) {
+        console.error("STAFF USERS UPDATE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: GET PRODUCTS ===================== */
 
 app.post("/api/staff/products", async (req, res) => {
