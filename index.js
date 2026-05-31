@@ -3488,24 +3488,40 @@ app.post("/api/staff/create-sale", async (req, res) => {
             });
         }
 
-        const totalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
+        const grossTotalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
         const totalQuantity = saleRows.reduce((sum, row) => sum + row.quantity, 0);
 
-        const paymentLabels = {
-            cash: "Готівка",
-            card_transfer: "Переказ на карту",
-            mono_qr: "Mono QR / посилання",
-            certificate: "Сертифікат",
-            certificate_cash: "Сертифікат + готівка",
-            certificate_mono_qr: "Сертифікат + Mono QR"
-        };
+        const focusPromoDiscount = await calculateStaffFocusProductDiscount(
+            connection,
+            saleRows
+            );
 
-        let paymentLabel = paymentLabels[paymentType] || paymentType;
-        let paidAmount = totalAmount;
-        let dueAmount = 0;
-        let certificateToUse = null;
-        let certificateNote = "";
-        let purchasedCertificates = [];
+            const focusProductDiscountAmount = Math.min(
+                grossTotalAmount,
+                Number(focusPromoDiscount.discountAmount || 0)
+            );
+
+            const totalAmount = Math.max(0, grossTotalAmount - focusProductDiscountAmount);
+
+            const focusPromoNote = focusProductDiscountAmount > 0
+                ? `, ${focusPromoDiscount.note || `Аромат дня: -${focusProductDiscountAmount} грн`}`
+                : "";
+
+            const paymentLabels = {
+                cash: "Готівка",
+                card_transfer: "Переказ на карту",
+                mono_qr: "Mono QR / посилання",
+                certificate: "Сертифікат",
+                certificate_cash: "Сертифікат + готівка",
+                certificate_mono_qr: "Сертифікат + Mono QR"
+            };
+
+            let paymentLabel = paymentLabels[paymentType] || paymentType;
+            let paidAmount = totalAmount;
+            let dueAmount = 0;
+            let certificateToUse = null;
+            let certificateNote = "";
+            let purchasedCertificates = [];
 
         const isCertificatePayment =
             paymentType === "certificate" ||
