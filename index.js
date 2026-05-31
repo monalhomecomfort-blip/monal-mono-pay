@@ -3869,11 +3869,12 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
                 warehouse_name,
                 product_id,
                 movement_type,
+                product_display_name,
                 quantity
             FROM stock_movements
             WHERE created_at >= ?
               AND created_at < ?
-              AND movement_type IN ('transfer_in', 'transfer_return', 'sale')
+              AND movement_type IN ('transfer_in', 'transfer_return', 'sale', 'sale_discovery')
             `,
             [startAt, endExclusive]
         );
@@ -3885,10 +3886,11 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
                 warehouse_name,
                 product_id,
                 movement_type,
+                product_display_name,
                 quantity
             FROM stock_movements
             WHERE created_at >= ?
-              AND movement_type IN ('transfer_in', 'transfer_return', 'sale')
+              AND movement_type IN ('transfer_in', 'transfer_return', 'sale', 'sale_discovery')
             `,
             [startAt]
         );
@@ -3901,6 +3903,8 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
             let incoming = 0;
             let transferOut = 0;
             let sales = 0;
+            let salesDirect = 0;
+            let salesDiscovery = 0;
 
             movements.forEach(movement => {
                 const movementWarehouseId = Number(movement.warehouse_id || 0);
@@ -3934,9 +3938,15 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
 
                     if (
                         movementWarehouseId === productionWarehouseId &&
-                        movementType === "sale"
+                        (movementType === "sale" || movementType === "sale_discovery")
                     ) {
                         sales += quantity;
+
+                        if (movementType === "sale_discovery") {
+                            salesDiscovery += quantity;
+                        } else {
+                            salesDirect += quantity;
+                        }
                     }
 
                     return;
@@ -3958,20 +3968,28 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
 
                 if (
                     movementWarehouseId === rowWarehouseId &&
-                    movementType === "sale"
+                    (movementType === "sale" || movementType === "sale_discovery")
                 ) {
                     sales += quantity;
+
+                    if (movementType === "sale_discovery") {
+                        salesDiscovery += quantity;
+                    } else {
+                        salesDirect += quantity;
+                    }
                 }
             });
 
             return {
                 incoming,
                 transferOut,
-                sales
+                sales,
+                salesDirect,
+                salesDiscovery
             };
         }
 
-        const items = stockRows
+        const baseItems = stockRows
             .map(row => {
                 const period = calcWarehouseProductMovement(row, periodMovements);
                 const afterStart = calcWarehouseProductMovement(row, afterStartMovements);
@@ -4001,17 +4019,49 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
                     opening_quantity: openingQuantity,
                     incoming_quantity: Number(period.incoming || 0),
                     transfer_out_quantity: Number(period.transferOut || 0),
-                    sales_quantity: Number(period.sales || 0),
+                    sales_quantity: Number(period.salesDirect || 0),
                     closing_quantity: closingQuantity
                 };
+            });
+
+        const discoveryItems = stockRows
+            .map(row => {
+                const period = calcWarehouseProductMovement(row, periodMovements);
+
+                return {
+                    warehouse_id: Number(row.warehouse_id || 0),
+                    warehouse_name: row.warehouse_name,
+                    product_id: Number(row.product_id || 0),
+                    product_key: row.product_key,
+                    product_display_name: `${row.product_display_name} (у Discovery)`,
+                    retail_price: Number(row.retail_price || 0),
+
+                    opening_quantity: 0,
+                    incoming_quantity: 0,
+                    transfer_out_quantity: 0,
+                    sales_quantity: Number(period.salesDiscovery || 0),
+                    closing_quantity: 0
+                };
             })
+            .filter(item => Number(item.sales_quantity || 0) > 0);
+
+        const items = [...baseItems, ...discoveryItems]
             .filter(item =>
                 item.opening_quantity !== 0 ||
                 item.incoming_quantity !== 0 ||
                 item.transfer_out_quantity !== 0 ||
                 item.sales_quantity !== 0 ||
                 item.closing_quantity !== 0
-            );
+            )
+            .sort((a, b) => {
+                const warehouseCompare =
+                    Number(a.warehouse_id || 0) - Number(b.warehouse_id || 0);
+
+                if (warehouseCompare !== 0) return warehouseCompare;
+
+                return String(a.product_display_name || "")
+                    .localeCompare(String(b.product_display_name || ""), "uk");
+            });
 
         const totals = items.reduce(
             (acc, item) => {
