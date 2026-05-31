@@ -2946,6 +2946,16 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
                 0
             FROM products_catalog p
             WHERE p.is_active = 1
+              AND NOT (
+                    LOWER(TRIM(COALESCE(p.product_key, ''))) LIKE 'certificate_%'
+                    OR LOWER(TRIM(COALESCE(p.display_name, ''))) LIKE '%сертифікат%'
+                    OR LOWER(TRIM(COALESCE(p.category_slug, ''))) IN ('discovery', 'discovery-set')
+                    OR LOWER(TRIM(COALESCE(p.product_key, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(p.display_name, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(p.display_name, ''))) LIKE '%діскавер%'
+                    OR LOWER(TRIM(COALESCE(p.product_label, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(p.product_label, ''))) LIKE '%діскавер%'
+              )
               AND NOT EXISTS (
                     SELECT 1
                     FROM stock_balances sb
@@ -2977,6 +2987,13 @@ app.post("/api/staff/stock-manage-items", async (req, res) => {
                 ON ps.product_id = sb.product_id
                AND ps.is_production_source = 1
             WHERE sb.warehouse_id = ?
+              AND NOT (
+                    LOWER(TRIM(COALESCE(sb.product_key, ''))) LIKE 'certificate_%'
+                    OR LOWER(TRIM(COALESCE(sb.product_display_name, ''))) LIKE '%сертифікат%'
+                    OR LOWER(TRIM(COALESCE(sb.product_key, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(sb.product_display_name, ''))) LIKE '%discovery%'
+                    OR LOWER(TRIM(COALESCE(sb.product_display_name, ''))) LIKE '%діскавер%'
+              )
             ORDER BY sb.product_display_name ASC
             `,
             [warehouseId]
