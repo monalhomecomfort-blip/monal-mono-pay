@@ -4080,7 +4080,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${certificateNote}`
             ]
         );
 
@@ -4168,6 +4168,9 @@ app.post("/api/staff/create-sale", async (req, res) => {
                         ? saleRows[0].stock.product_display_name
                         : `${saleRows.length} товарних рядків`,
                 quantity: totalQuantity,
+                grossTotalAmount,
+                focusProductDiscountAmount,
+                focusPromoNote,
                 totalAmount,
                 paymentLabel,
                 customerName: customer ? customer.name : "Без клієнта",
