@@ -3094,9 +3094,26 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             });
         }
 
-        const totalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
+        const grossTotalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
 
-        if (!totalAmount || totalAmount <= 0) {
+        const focusPromoDiscount = await calculateStaffFocusProductDiscount(
+            connection,
+            saleRows,
+            warehouseId
+        );
+
+        const focusProductDiscountAmount = Math.min(
+            grossTotalAmount,
+            Number(focusPromoDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(0, grossTotalAmount - focusProductDiscountAmount);
+
+        const focusPromoNote = focusProductDiscountAmount > 0
+            ? focusPromoDiscount.note || `Аромат дня: -${focusProductDiscountAmount} грн`
+            : "";
+
+        if (!grossTotalAmount || grossTotalAmount <= 0) {
             return res.status(400).json({
                 ok: false,
                 error: "Сума продажу має бути більше 0"
@@ -3271,6 +3288,9 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             ok: true,
             orderId,
             pageUrl,
+            grossTotalAmount,
+            focusProductDiscountAmount,
+            focusPromoNote,
             totalAmount,
             paymentAmount,
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
