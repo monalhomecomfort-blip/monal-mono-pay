@@ -539,7 +539,8 @@ function publicStaff(staff) {
         phone: staff.phone,
         role: staff.role,
         warehouse_id: staff.warehouse_id,
-        is_active: Number(staff.is_active) === 1
+        is_active: Number(staff.is_active) === 1,
+        can_manage_staff_users: Number(staff.can_manage_staff_users) === 1
     };
 }
 
