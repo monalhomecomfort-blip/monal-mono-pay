@@ -1196,6 +1196,168 @@ async function calculateStaffFocusProductDiscount(connection, saleRows, warehous
     };
 }
 
+/* ===================== STAFF: SALE PREVIEW ===================== */
+
+app.post("/api/staff/sale-preview", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const warehouseIdFromBody = Number(req.body.warehouseId || 0);
+        const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const [staffRows] = await connection.query(
+            `
+            SELECT
+                id,
+                role,
+                warehouse_id,
+                is_active
+            FROM staff_users
+            WHERE id = ?
+              AND is_active = 1
+            LIMIT 1
+            `,
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staffUser = staffRows[0];
+
+        const warehouseId =
+            String(staffUser.role || "") === "admin"
+                ? warehouseIdFromBody
+                : Number(staffUser.warehouse_id || 0);
+
+        const saleItems = bodyItems
+            .map(item => ({
+                productId: Number(item.productId || item.product_id || 0),
+                quantity: Number(item.quantity || 0)
+            }))
+            .filter(item =>
+                item.productId &&
+                Number.isInteger(item.quantity) &&
+                item.quantity > 0
+            );
+
+        if (!saleItems.length) {
+            return res.json({
+                ok: true,
+                grossTotalAmount: 0,
+                focusProductDiscountAmount: 0,
+                focusPromoNote: "",
+                totalAmount: 0
+            });
+        }
+
+        const productIds = [
+            ...new Set(
+                saleItems
+                    .map(item => item.productId)
+                    .filter(id => Number.isInteger(id) && id > 0)
+            )
+        ];
+
+        const placeholders = productIds.map(() => "?").join(",");
+
+        const [products] = await connection.query(
+            `
+            SELECT
+                id,
+                product_key,
+                display_name,
+                price
+            FROM products_catalog
+            WHERE id IN (${placeholders})
+            `,
+            productIds
+        );
+
+        const productsById = new Map(
+            products.map(product => [
+                Number(product.id || 0),
+                product
+            ])
+        );
+
+        const saleRows = [];
+
+        saleItems.forEach(item => {
+            const product = productsById.get(Number(item.productId || 0));
+
+            if (!product) return;
+
+            const unitPrice = Number(product.price || 0);
+            const rowTotal = unitPrice * Number(item.quantity || 0);
+
+            saleRows.push({
+                stock: {
+                    product_id: Number(product.id || 0),
+                    product_key: product.product_key,
+                    product_display_name: product.display_name,
+                    retail_price: unitPrice
+                },
+                quantity: item.quantity,
+                unitPrice,
+                rowTotal
+            });
+        });
+
+        const grossTotalAmount = saleRows.reduce(
+            (sum, row) => sum + Number(row.rowTotal || 0),
+            0
+        );
+
+        const focusPromoDiscount = await calculateStaffFocusProductDiscount(
+            connection,
+            saleRows,
+            warehouseId
+        );
+
+        const focusProductDiscountAmount = Math.min(
+            grossTotalAmount,
+            Number(focusPromoDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            grossTotalAmount - focusProductDiscountAmount
+        );
+
+        return res.json({
+            ok: true,
+            grossTotalAmount,
+            focusProductDiscountAmount,
+            focusPromoNote: focusPromoDiscount.note || "",
+            totalAmount
+        });
+
+    } catch (err) {
+        console.error("STAFF SALE PREVIEW ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== GET ACTIVE PERSONAL OFFERS ===================== */
 app.get("/api/personal-offers", async (req, res) => {
     try {
