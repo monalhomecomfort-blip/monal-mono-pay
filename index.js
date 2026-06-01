@@ -1659,7 +1659,8 @@ async function getAdminStaffOrDeny(staffId) {
         SELECT
             id,
             role,
-            is_active
+            is_active,
+            can_manage_staff_users
         FROM staff_users
         WHERE id = ?
           AND is_active = 1
@@ -1690,6 +1691,24 @@ async function getAdminStaffOrDeny(staffId) {
         ok: true,
         staff
     };
+}
+
+async function getStaffUsersManagerOrDeny(staffId) {
+    const adminCheck = await getAdminStaffOrDeny(staffId);
+
+    if (!adminCheck.ok) {
+        return adminCheck;
+    }
+
+    if (Number(adminCheck.staff.can_manage_staff_users) !== 1) {
+        return {
+            ok: false,
+            status: 403,
+            error: "Немає права редагувати Staff users"
+        };
+    }
+
+    return adminCheck;
 }
 
 function normalizeStaffUserRole(roleRaw) {
@@ -1867,7 +1886,7 @@ app.post("/api/staff/users-create", async (req, res) => {
             });
         }
 
-        const adminCheck = await getAdminStaffOrDeny(adminStaffId);
+        const adminCheck = await getStaffUsersManagerOrDeny(adminStaffId);
 
         if (!adminCheck.ok) {
             return res.status(adminCheck.status).json({
@@ -2035,7 +2054,7 @@ app.post("/api/staff/users-update", async (req, res) => {
             });
         }
 
-        const adminCheck = await getAdminStaffOrDeny(adminStaffId);
+        const adminCheck = await getStaffUsersManagerOrDeny(adminStaffId);
 
         if (!adminCheck.ok) {
             return res.status(adminCheck.status).json({
