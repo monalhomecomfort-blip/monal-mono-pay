@@ -6097,7 +6097,21 @@ app.post("/api/staff/sales-report", async (req, res) => {
 
             const parsedItems = parseItemsText(order.items_text);
 
-            parsedItems.forEach(item => {
+            const parsedItemsGrossTotal = parsedItems.reduce(
+                (sum, item) => sum + Number(item.rowTotal || 0),
+                0
+            );
+
+            const orderNetTotalAmount = Number(order.total_amount || 0);
+
+            const reportRetailRatio =
+                parsedItemsGrossTotal > 0 && orderNetTotalAmount > 0
+                    ? Math.min(1, orderNetTotalAmount / parsedItemsGrossTotal)
+                    : 1;
+
+            let allocatedRetailNetTotal = 0;
+
+            parsedItems.forEach((item, itemIndex) => {
                 const product = findProductByName(item.productName);
 
                 const productLabel = String(product?.product_label || "Не визначено").trim();
@@ -6110,6 +6124,31 @@ app.post("/api/staff/sales-report", async (req, res) => {
                 if (!quantity) return;
 
                 const retailPrice = Number(item.unitPrice || product?.price || 0);
+                const rowGrossTotal = Number(item.rowTotal || retailPrice * quantity);
+
+                let rowRetailAmount = Math.round(rowGrossTotal * reportRetailRatio);
+
+                if (
+                    reportRetailRatio < 1 &&
+                    itemIndex === parsedItems.length - 1
+                ) {
+                    const orderNetCap = Math.max(
+                        0,
+                        Math.round(
+                            orderNetTotalAmount > 0
+                                ? Math.min(parsedItemsGrossTotal, orderNetTotalAmount)
+                                : 0
+                        )
+                    );
+
+                    rowRetailAmount = Math.max(
+                        0,
+                        orderNetCap - allocatedRetailNetTotal
+                    );
+                }
+
+                allocatedRetailNetTotal += rowRetailAmount;
+
                 const costPrice = Number(product?.cost_price || 0);
                 const realizationPrice = Number(product?.realization_price || 0);
 
@@ -6158,7 +6197,7 @@ app.post("/api/staff/sales-report", async (req, res) => {
                 const row = reportMap.get(key);
 
                 row.quantity += quantity;
-                row.retail_amount += retailPrice * quantity;
+                row.retail_amount += rowRetailAmount;
                 row.realization_amount += realizationPrice * quantity;
 
                 if (canViewCost) {
@@ -6181,7 +6220,7 @@ app.post("/api/staff/sales-report", async (req, res) => {
                         }
 
                         row.days[day].quantity += quantity;
-                        row.days[day].retail_amount += retailPrice * quantity;
+                        row.days[day].retail_amount += rowRetailAmount;
                         row.days[day].realization_amount += realizationPrice * quantity;
 
                         if (canViewCost) {
