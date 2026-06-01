@@ -1114,24 +1114,37 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
     }
 });
 
-async function calculateStaffFocusProductDiscount(connection, saleRows) {
+async function calculateStaffFocusProductDiscount(connection, saleRows, warehouseId) {
+    const normalizedWarehouseId = Number(warehouseId || 0);
+
+    if (!normalizedWarehouseId) {
+        return {
+            discountAmount: 0,
+            note: ""
+        };
+    }
+
     const [campaignRows] = await connection.query(
         `
         SELECT
-            id,
-            title,
-            focus_product_id,
-            discount_percent
-        FROM promo_campaigns
-        WHERE is_active = 1
-          AND audience = 'public'
-          AND promo_type = 'focus_product'
-          AND focus_product_id IS NOT NULL
-          AND (starts_at IS NULL OR starts_at <= NOW())
-          AND (ends_at IS NULL OR ends_at >= NOW())
-        ORDER BY priority ASC, id DESC
+            pc.id,
+            pc.title,
+            pc.focus_product_id,
+            pc.discount_percent
+        FROM promo_campaigns pc
+        INNER JOIN promo_campaign_warehouses pcw
+            ON pcw.promo_campaign_id = pc.id
+           AND pcw.warehouse_id = ?
+        WHERE pc.is_active = 1
+          AND pc.audience = 'public'
+          AND pc.promo_type = 'focus_product'
+          AND pc.focus_product_id IS NOT NULL
+          AND (pc.starts_at IS NULL OR pc.starts_at <= NOW())
+          AND (pc.ends_at IS NULL OR pc.ends_at >= NOW())
+        ORDER BY pc.priority ASC, pc.id DESC
         LIMIT 10
-        `
+        `,
+        [normalizedWarehouseId]
     );
 
     if (!campaignRows.length) {
@@ -3586,8 +3599,9 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const focusPromoDiscount = await calculateStaffFocusProductDiscount(
             connection,
-            saleRows
-            );
+            saleRows,
+            warehouseId
+        );
 
             const focusProductDiscountAmount = Math.min(
                 grossTotalAmount,
