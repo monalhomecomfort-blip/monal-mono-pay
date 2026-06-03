@@ -1245,7 +1245,8 @@ async function calculateStaffWelcomeDiscount(connection, saleRows, customerId, w
         SELECT
             id,
             customer_status,
-            welcome_discount_used
+            welcome_discount_used,
+            total_spent
         FROM customers
         WHERE id = ?
         LIMIT 1
@@ -1265,7 +1266,8 @@ async function calculateStaffWelcomeDiscount(connection, saleRows, customerId, w
 
     const canUseWelcome =
         String(customer.customer_status || "general").toLowerCase() === "general" &&
-        !Boolean(Number(customer.welcome_discount_used || 0));
+        !Boolean(Number(customer.welcome_discount_used || 0)) &&
+        Number(customer.total_spent || 0) <= 0;
 
     if (!canUseWelcome) {
         return {
