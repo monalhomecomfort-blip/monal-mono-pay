@@ -3439,10 +3439,34 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             Number(focusPromoDiscount.discountAmount || 0)
         );
 
-        const totalAmount = Math.max(0, grossTotalAmount - focusProductDiscountAmount);
+        const totalAfterFocusPromo = Math.max(
+            0,
+            grossTotalAmount - focusProductDiscountAmount
+        );
+
+        const welcomeDiscount = await calculateStaffWelcomeDiscount(
+            connection,
+            saleRows,
+            customerId,
+            warehouseId
+        );
+
+        const welcomeDiscountAmount = Math.min(
+            totalAfterFocusPromo,
+            Number(welcomeDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterFocusPromo - welcomeDiscountAmount
+        );
 
         const focusPromoNote = focusProductDiscountAmount > 0
             ? focusPromoDiscount.note || `Аромат дня: -${focusProductDiscountAmount} грн`
+            : "";
+
+        const welcomeDiscountNote = welcomeDiscountAmount > 0
+            ? welcomeDiscount.note || `Welcome-знижка 10%: -${welcomeDiscountAmount} грн`
             : "";
 
         if (!grossTotalAmount || grossTotalAmount <= 0) {
@@ -3623,6 +3647,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             grossTotalAmount,
             focusProductDiscountAmount,
             focusPromoNote,
+            welcomeDiscountAmount,
+            welcomeDiscountNote,
             totalAmount,
             paymentAmount,
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
