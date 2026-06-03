@@ -1197,6 +1197,131 @@ async function calculateStaffFocusProductDiscount(connection, saleRows, warehous
     };
 }
 
+async function getStaffActiveFocusProductIds(connection, warehouseId) {
+    const normalizedWarehouseId = Number(warehouseId || 0);
+
+    if (!normalizedWarehouseId) {
+        return new Set();
+    }
+
+    const [rows] = await connection.query(
+        `
+        SELECT DISTINCT
+            pc.focus_product_id
+        FROM promo_campaigns pc
+        INNER JOIN promo_campaign_warehouses pcw
+            ON pcw.promo_campaign_id = pc.id
+           AND pcw.warehouse_id = ?
+        WHERE pc.is_active = 1
+          AND pc.audience = 'public'
+          AND pc.promo_type = 'focus_product'
+          AND pc.focus_product_id IS NOT NULL
+          AND (pc.starts_at IS NULL OR pc.starts_at <= NOW())
+          AND (pc.ends_at IS NULL OR pc.ends_at >= NOW())
+        `,
+        [normalizedWarehouseId]
+    );
+
+    return new Set(
+        rows
+            .map(row => Number(row.focus_product_id || 0))
+            .filter(id => Number.isInteger(id) && id > 0)
+    );
+}
+
+async function calculateStaffWelcomeDiscount(connection, saleRows, customerId, warehouseId) {
+    const normalizedCustomerId = Number(customerId || 0);
+
+    if (!normalizedCustomerId) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isAvailable: false
+        };
+    }
+
+    const [customerRows] = await connection.query(
+        `
+        SELECT
+            id,
+            customer_status,
+            welcome_discount_used
+        FROM customers
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [normalizedCustomerId]
+    );
+
+    if (!customerRows.length) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isAvailable: false
+        };
+    }
+
+    const customer = customerRows[0];
+
+    const canUseWelcome =
+        String(customer.customer_status || "general").toLowerCase() === "general" &&
+        !Boolean(Number(customer.welcome_discount_used || 0));
+
+    if (!canUseWelcome) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isAvailable: false
+        };
+    }
+
+    const focusProductIds = await getStaffActiveFocusProductIds(
+        connection,
+        warehouseId
+    );
+
+    const eligibleTotal = saleRows
+        .filter(row => {
+            const productId = Number(row?.stock?.product_id || 0);
+
+            if (focusProductIds.has(productId)) {
+                return false;
+            }
+
+            if (row?.isCertificateProduct) {
+                return false;
+            }
+
+            if (isStaffCertificateStock(row?.stock)) {
+                return false;
+            }
+
+            return true;
+        })
+        .reduce((sum, row) => sum + Number(row.rowTotal || 0), 0);
+
+    if (eligibleTotal <= 0) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isAvailable: true
+        };
+    }
+
+    const discountAmount = Math.min(
+        eligibleTotal,
+        Math.round(eligibleTotal * 0.10)
+    );
+
+    return {
+        discountAmount,
+        note: discountAmount > 0
+            ? `Welcome-знижка 10%: -${discountAmount} грн`
+            : "",
+        isAvailable: true
+    };
+}
+
 /* ===================== STAFF: SALE PREVIEW ===================== */
 
 app.post("/api/staff/sale-preview", async (req, res) => {
@@ -1204,6 +1329,7 @@ app.post("/api/staff/sale-preview", async (req, res) => {
 
     try {
         const staffId = Number(req.body.staffId || 0);
+        const customerId = Number(req.body.customerId || 0);
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -1260,6 +1386,9 @@ app.post("/api/staff/sale-preview", async (req, res) => {
                 grossTotalAmount: 0,
                 focusProductDiscountAmount: 0,
                 focusPromoNote: "",
+                welcomeDiscountAmount: 0,
+                welcomeDiscountNote: "",
+                welcomeDiscountAvailable: false,
                 totalAmount: 0
             });
         }
@@ -1333,9 +1462,26 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             Number(focusPromoDiscount.discountAmount || 0)
         );
 
-        const totalAmount = Math.max(
+        const totalAfterFocusPromo = Math.max(
             0,
             grossTotalAmount - focusProductDiscountAmount
+        );
+
+        const welcomeDiscount = await calculateStaffWelcomeDiscount(
+            connection,
+            saleRows,
+            customerId,
+            warehouseId
+        );
+
+        const welcomeDiscountAmount = Math.min(
+            totalAfterFocusPromo,
+            Number(welcomeDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterFocusPromo - welcomeDiscountAmount
         );
 
         return res.json({
@@ -1343,9 +1489,11 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             grossTotalAmount,
             focusProductDiscountAmount,
             focusPromoNote: focusPromoDiscount.note || "",
+            welcomeDiscountAmount,
+            welcomeDiscountNote: welcomeDiscount.note || "",
+            welcomeDiscountAvailable: Boolean(welcomeDiscount.isAvailable),
             totalAmount
         });
-
     } catch (err) {
         console.error("STAFF SALE PREVIEW ERROR:", err);
 
