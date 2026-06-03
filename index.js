@@ -3955,18 +3955,45 @@ app.post("/api/staff/create-sale", async (req, res) => {
             warehouseId
         );
 
-            const focusProductDiscountAmount = Math.min(
-                grossTotalAmount,
-                Number(focusPromoDiscount.discountAmount || 0)
-            );
+        const focusProductDiscountAmount = Math.min(
+            grossTotalAmount,
+            Number(focusPromoDiscount.discountAmount || 0)
+        );
 
-            const totalAmount = Math.max(0, grossTotalAmount - focusProductDiscountAmount);
+        const totalAfterFocusPromo = Math.max(
+            0,
+            grossTotalAmount - focusProductDiscountAmount
+        );
 
-            const focusPromoNote = focusProductDiscountAmount > 0
-                ? `, ${focusPromoDiscount.note || `Аромат дня: -${focusProductDiscountAmount} грн`}`
-                : "";
+        const welcomeDiscount = await calculateStaffWelcomeDiscount(
+            connection,
+            saleRows,
+            customerId,
+            warehouseId
+        );
 
-            const paymentLabels = {
+        const welcomeDiscountAmount = Math.min(
+            totalAfterFocusPromo,
+            Number(welcomeDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterFocusPromo - welcomeDiscountAmount
+        );
+
+        const focusPromoNote = focusProductDiscountAmount > 0
+            ? `, ${focusPromoDiscount.note || `Аромат дня: -${focusProductDiscountAmount} грн`}`
+            : "";
+
+        const welcomeDiscountNote = welcomeDiscountAmount > 0
+            ? `, ${welcomeDiscount.note || `Welcome-знижка 10%: -${welcomeDiscountAmount} грн`}`
+            : "";
+
+        const shouldMarkWelcomeDiscountUsed =
+            Boolean(customer && welcomeDiscountAmount > 0 && welcomeDiscount.isAvailable);
+
+        const paymentLabels = {
                 cash: "Готівка",
                 card_transfer: "Переказ на карту",
                 mono_qr: "Mono QR / посилання",
@@ -4432,7 +4459,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${certificateNote}`
             ]
         );
 
@@ -4495,16 +4522,30 @@ app.post("/api/staff/create-sale", async (req, res) => {
             const newTotalSpent = Number(customer.total_spent || 0) + totalAmount;
             const newDiscount = getEffectiveDiscount(customer.customer_status, newTotalSpent);
 
-            await connection.query(
-                `
-                UPDATE customers
-                SET
-                    total_spent = ?,
-                    discount = ?
-                WHERE id = ?
-                `,
-                [newTotalSpent, newDiscount, customer.id]
-            );
+            if (shouldMarkWelcomeDiscountUsed) {
+                await connection.query(
+                    `
+                    UPDATE customers
+                    SET
+                        total_spent = ?,
+                        discount = ?,
+                        welcome_discount_used = 1
+                    WHERE id = ?
+                    `,
+                    [newTotalSpent, newDiscount, customer.id]
+                );
+            } else {
+                await connection.query(
+                    `
+                    UPDATE customers
+                    SET
+                        total_spent = ?,
+                        discount = ?
+                    WHERE id = ?
+                    `,
+                    [newTotalSpent, newDiscount, customer.id]
+                );
+            }
         }
 
         await connection.commit();
@@ -4523,6 +4564,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 grossTotalAmount,
                 focusProductDiscountAmount,
                 focusPromoNote,
+                welcomeDiscountAmount,
+                welcomeDiscountNote,
                 totalAmount,
                 paymentLabel,
                 customerName: customer ? customer.name : "Без клієнта",
