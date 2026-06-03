@@ -1563,6 +1563,69 @@ app.get("/api/personal-offers", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: PERSONAL OFFERS LIST ===================== */
+
+app.post("/api/staff/personal-offers-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        const [offers] = await db.query(
+            `
+            SELECT
+                id,
+                title,
+                offer_text,
+                offer_type,
+                promo_code,
+                discount_percent,
+                discount_amount,
+                min_order_amount,
+                required_category_slug,
+                required_discount_level,
+                COALESCE(required_customer_status, 'all') AS required_customer_status,
+                is_active,
+                DATE_FORMAT(starts_at, '%Y-%m-%d %H:%i:%s') AS starts_at,
+                DATE_FORMAT(ends_at, '%Y-%m-%d %H:%i:%s') AS ends_at,
+                DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+            FROM personal_offers
+            ORDER BY
+                offer_type ASC,
+                created_at DESC,
+                id DESC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            offers
+        });
+
+    } catch (err) {
+        console.error("STAFF PERSONAL OFFERS LIST ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== PARTNERSHIP REQUEST ===================== */
 app.post("/api/partnership-request", async (req, res) => {
     try {
