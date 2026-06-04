@@ -1993,6 +1993,12 @@ app.post("/api/staff/save-personal-promo-code", async (req, res) => {
             });
         }
 
+        const conditionText = minOrderAmount > 0
+            ? `при замовленні від ${minOrderAmount} грн без врахування сертифікатів`
+            : "без мінімальної суми замовлення";
+
+        const offerText = `Промокод ${promoCode}: знижка ${discountAmount} грн ${conditionText}.`;
+
         await connection.beginTransaction();
 
         let savedOfferId = offerId;
@@ -2024,7 +2030,7 @@ app.post("/api/staff/save-personal-promo-code", async (req, res) => {
                 UPDATE personal_offers
                 SET
                     title = ?,
-                    offer_text = NULL,
+                    offer_text = ?,
                     offer_type = 'promo',
                     promo_code = ?,
                     discount_percent = NULL,
@@ -2041,6 +2047,7 @@ app.post("/api/staff/save-personal-promo-code", async (req, res) => {
                 `,
                 [
                     title,
+                    offerText,
                     promoCode,
                     discountAmount,
                     minOrderAmount,
@@ -2072,10 +2079,11 @@ app.post("/api/staff/save-personal-promo-code", async (req, res) => {
                     ends_at,
                     created_at
                 )
-                VALUES (?, NULL, 'promo', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, NOW())
+                VALUES (?, ?, 'promo', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, NOW())
                 `,
                 [
                     title,
+                    offerText,
                     promoCode,
                     discountAmount,
                     minOrderAmount,
