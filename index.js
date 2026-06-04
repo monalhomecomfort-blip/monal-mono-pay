@@ -1509,7 +1509,214 @@ app.post("/api/staff/sale-preview", async (req, res) => {
     }
 });
 
+/* ===================== PERSONAL OFFERS / PROMO CODES ===================== */
+
+function normalizePersonalOfferStatusForDb(value) {
+    const allowedStatuses = ["all", "general", "friends", "partners"];
+
+    const rawItems = Array.isArray(value)
+        ? value
+        : String(value || "all").split(",");
+
+    const statuses = [
+        ...new Set(
+            rawItems
+                .map(item => String(item || "").trim().toLowerCase())
+                .filter(item => allowedStatuses.includes(item))
+        )
+    ];
+
+    if (!statuses.length || statuses.includes("all")) {
+        return "all";
+    }
+
+    return statuses.join(",");
+}
+
+function normalizePersonalOfferDateTime(value) {
+    const cleanValue = String(value || "").trim();
+
+    if (!cleanValue) return null;
+
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(cleanValue)) {
+        return cleanValue.replace("T", " ") + ":00";
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(cleanValue)) {
+        return cleanValue.replace("T", " ");
+    }
+
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(cleanValue)) {
+        return cleanValue + ":00";
+    }
+
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(cleanValue)) {
+        return cleanValue;
+    }
+
+    return null;
+}
+
+function isPersonalOfferCertificateItem(item) {
+    const name = String(item?.name || item?.product_name || item?.display_name || "").toLowerCase();
+    const label = String(item?.label || item?.product_label || "").toLowerCase();
+    const categorySlug = String(item?.category_slug || "").toLowerCase();
+
+    return (
+        name.includes("сертиф") ||
+        label.includes("сертиф") ||
+        categorySlug.includes("certificate")
+    );
+}
+
+function calculatePersonalPromoEligibleSum(items, offer) {
+    const list = Array.isArray(items) ? items : [];
+
+    return list
+        .filter(item => !isPersonalOfferCertificateItem(item))
+        .reduce((sum, item) => {
+            const price = Number(item?.price || item?.unitPrice || item?.retail_price || 0);
+            const quantity = Number(item?.quantity || item?.qty || 1);
+
+            return sum + price * Math.max(1, quantity || 1);
+        }, 0);
+}
+
+async function getPersonalPromoCustomerStatus(connection, userId) {
+    const normalizedUserId = Number(userId || 0);
+
+    if (!normalizedUserId) {
+        return null;
+    }
+
+    const [customerRows] = await connection.query(
+        `
+        SELECT
+            customer_status
+        FROM customers
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [normalizedUserId]
+    );
+
+    if (!customerRows.length) {
+        return null;
+    }
+
+    return String(customerRows[0].customer_status || "general").trim().toLowerCase();
+}
+
+async function findActivePersonalPromoCode(connection, promoCode, customerStatus) {
+    const normalizedCode = String(promoCode || "").trim().toUpperCase();
+    const normalizedStatus = String(customerStatus || "").trim().toLowerCase();
+
+    if (!normalizedCode || !normalizedStatus) return null;
+
+    const [rows] = await connection.query(
+        `
+        SELECT
+            id,
+            title,
+            offer_text,
+            offer_type,
+            promo_code,
+            discount_percent,
+            discount_amount,
+            min_order_amount,
+            required_category_slug,
+            required_discount_level,
+            COALESCE(required_customer_status, 'all') AS required_customer_status,
+            is_active,
+            DATE_FORMAT(starts_at, '%Y-%m-%d %H:%i:%s') AS starts_at,
+            DATE_FORMAT(ends_at, '%Y-%m-%d %H:%i:%s') AS ends_at
+        FROM personal_offers
+        WHERE offer_type = 'promo'
+          AND is_active = 1
+          AND UPPER(TRIM(COALESCE(promo_code, ''))) = ?
+          AND COALESCE(discount_amount, 0) > 0
+          AND (starts_at IS NULL OR starts_at <= NOW())
+          AND (ends_at IS NULL OR ends_at >= NOW())
+          AND (
+                COALESCE(required_customer_status, '') = ''
+                OR FIND_IN_SET('all', REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+                OR FIND_IN_SET(?, REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+          )
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        `,
+        [
+            normalizedCode,
+            normalizedStatus
+        ]
+    );
+
+    return rows.length ? rows[0] : null;
+}
+
+function buildPersonalPromoCheckResult(offer, items) {
+    if (!offer) {
+        return {
+            ok: true,
+            valid: false,
+            discountAmount: 0,
+            message: "Невірний або неактивний промокод"
+        };
+    }
+
+    const eligibleSum = calculatePersonalPromoEligibleSum(items, offer);
+    const minOrderAmount = Number(offer.min_order_amount || 0);
+    const discountAmount = Number(offer.discount_amount || 0);
+
+    if (eligibleSum <= 0) {
+        return {
+            ok: true,
+            valid: false,
+            discountAmount: 0,
+            message: "Знижка не поширюється на товари з кошика"
+        };
+    }
+
+    if (minOrderAmount > 0 && eligibleSum < minOrderAmount) {
+        return {
+            ok: true,
+            valid: false,
+            discountAmount: 0,
+            minOrderAmount,
+            eligibleSum,
+            message: `Для цього промокоду потрібна сума від ${minOrderAmount} грн без врахування сертифікатів`
+        };
+    }
+
+    const finalDiscountAmount = Math.min(
+        eligibleSum,
+        discountAmount
+    );
+
+    if (finalDiscountAmount <= 0) {
+        return {
+            ok: true,
+            valid: false,
+            discountAmount: 0,
+            message: "Промокод не має суми знижки"
+        };
+    }
+
+    return {
+        ok: true,
+        valid: true,
+        offerId: offer.id,
+        title: offer.title,
+        promoCode: offer.promo_code,
+        discountAmount: finalDiscountAmount,
+        minOrderAmount,
+        eligibleSum,
+        message: "Знижка застосована"
+    };
+}
+
 /* ===================== GET ACTIVE PERSONAL OFFERS ===================== */
+
 app.get("/api/personal-offers", async (req, res) => {
     try {
         const userId = Number(req.query.userId);
@@ -1527,10 +1734,11 @@ app.get("/api/personal-offers", async (req, res) => {
             return res.status(404).json({ ok: false, error: "user not found" });
         }
 
-        const customerStatus = users[0].customer_status || "general";
+        const customerStatus = String(users[0].customer_status || "general").toLowerCase();
 
         const [rows] = await db.query(
-            `SELECT
+            `
+            SELECT
                 id,
                 title,
                 offer_text,
@@ -1541,15 +1749,20 @@ app.get("/api/personal-offers", async (req, res) => {
                 min_order_amount,
                 required_category_slug,
                 required_discount_level,
-                required_customer_status,
+                COALESCE(required_customer_status, 'all') AS required_customer_status,
                 starts_at,
                 ends_at
-             FROM personal_offers
-             WHERE is_active = 1
-               AND (starts_at IS NULL OR starts_at <= NOW())
-               AND (ends_at IS NULL OR ends_at >= NOW())
-               AND (required_customer_status = ? OR required_customer_status = 'all')
-             ORDER BY created_at DESC`,
+            FROM personal_offers
+            WHERE is_active = 1
+              AND (starts_at IS NULL OR starts_at <= NOW())
+              AND (ends_at IS NULL OR ends_at >= NOW())
+              AND (
+                    COALESCE(required_customer_status, '') = ''
+                    OR FIND_IN_SET('all', REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+                    OR FIND_IN_SET(?, REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+              )
+            ORDER BY created_at DESC
+            `,
             [customerStatus]
         );
 
@@ -1560,6 +1773,60 @@ app.get("/api/personal-offers", async (req, res) => {
     } catch (err) {
         console.error("GET PERSONAL OFFERS ERROR:", err);
         res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+/* ===================== CHECK PERSONAL PROMO CODE ===================== */
+
+app.post("/api/promo-code/check", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const promoCode = String(req.body.promoCode || req.body.code || "").trim().toUpperCase();
+        const userId = Number(req.body.userId || 0);
+        const items = Array.isArray(req.body.items) ? req.body.items : [];
+
+        if (!promoCode) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing promoCode"
+            });
+        }
+
+        const customerStatus = await getPersonalPromoCustomerStatus(
+            connection,
+            userId
+        );
+
+        if (!customerStatus) {
+            return res.json({
+                ok: true,
+                valid: false,
+                discountAmount: 0,
+                message: "Персональний промокод доступний тільки зареєстрованим клієнтам"
+            });
+        }
+
+        const offer = await findActivePersonalPromoCode(
+            connection,
+            promoCode,
+            customerStatus
+        );
+
+        return res.json(
+            buildPersonalPromoCheckResult(offer, items)
+        );
+
+    } catch (err) {
+        console.error("CHECK PERSONAL PROMO CODE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
     }
 });
 
@@ -1623,6 +1890,227 @@ app.post("/api/staff/personal-offers-list", async (req, res) => {
             ok: false,
             error: "server error"
         });
+    }
+});
+
+/* ===================== STAFF: SAVE PERSONAL PROMO CODE ===================== */
+
+app.post("/api/staff/save-personal-promo-code", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const offerId = Number(req.body.offerId || 0);
+
+        const title = String(req.body.title || "").trim();
+        const promoCode = String(req.body.promoCode || "").trim().toUpperCase();
+        const discountAmount = Number(req.body.discountAmount || 0);
+        const minOrderAmount = Number(req.body.minOrderAmount || 0);
+        const startsAt = normalizePersonalOfferDateTime(req.body.startsAt);
+        const endsAt = normalizePersonalOfferDateTime(req.body.endsAt);
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+        const requiredCustomerStatus = normalizePersonalOfferStatusForDb(
+            req.body.requiredCustomerStatus
+        );
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!title || !promoCode) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву пропозиції і промокод"
+            });
+        }
+
+        if (discountAmount <= 0) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть знижку в грн більше 0"
+            });
+        }
+
+        if (minOrderAmount < 0) {
+            return res.status(400).json({
+                ok: false,
+                error: "Умова по сумі не може бути меншою за 0"
+            });
+        }
+
+        if (req.body.startsAt && !startsAt) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректна дата початку"
+            });
+        }
+
+        if (req.body.endsAt && !endsAt) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректна дата завершення"
+            });
+        }
+
+        if (startsAt && endsAt && new Date(startsAt).getTime() >= new Date(endsAt).getTime()) {
+            return res.status(400).json({
+                ok: false,
+                error: "Дата завершення має бути пізніше дати початку"
+            });
+        }
+
+        const [duplicateRows] = await connection.query(
+            `
+            SELECT
+                id
+            FROM personal_offers
+            WHERE UPPER(TRIM(COALESCE(promo_code, ''))) = ?
+              AND id <> ?
+            LIMIT 1
+            `,
+            [
+                promoCode,
+                offerId || 0
+            ]
+        );
+
+        if (duplicateRows.length) {
+            return res.status(409).json({
+                ok: false,
+                error: "Такий промокод вже існує"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        let savedOfferId = offerId;
+
+        if (offerId) {
+            const [existingRows] = await connection.query(
+                `
+                SELECT
+                    id
+                FROM personal_offers
+                WHERE id = ?
+                  AND offer_type = 'promo'
+                LIMIT 1
+                `,
+                [offerId]
+            );
+
+            if (!existingRows.length) {
+                await connection.rollback();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Персональний промокод не знайдено"
+                });
+            }
+
+            await connection.query(
+                `
+                UPDATE personal_offers
+                SET
+                    title = ?,
+                    offer_text = NULL,
+                    offer_type = 'promo',
+                    promo_code = ?,
+                    discount_percent = NULL,
+                    discount_amount = ?,
+                    min_order_amount = ?,
+                    required_category_slug = NULL,
+                    required_discount_level = NULL,
+                    required_customer_status = ?,
+                    is_active = ?,
+                    starts_at = ?,
+                    ends_at = ?
+                WHERE id = ?
+                  AND offer_type = 'promo'
+                `,
+                [
+                    title,
+                    promoCode,
+                    discountAmount,
+                    minOrderAmount,
+                    requiredCustomerStatus,
+                    isActive,
+                    startsAt,
+                    endsAt,
+                    offerId
+                ]
+            );
+
+        } else {
+            const [result] = await connection.query(
+                `
+                INSERT INTO personal_offers
+                (
+                    title,
+                    offer_text,
+                    offer_type,
+                    promo_code,
+                    discount_percent,
+                    discount_amount,
+                    min_order_amount,
+                    required_category_slug,
+                    required_discount_level,
+                    required_customer_status,
+                    is_active,
+                    starts_at,
+                    ends_at,
+                    created_at
+                )
+                VALUES (?, NULL, 'promo', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, NOW())
+                `,
+                [
+                    title,
+                    promoCode,
+                    discountAmount,
+                    minOrderAmount,
+                    requiredCustomerStatus,
+                    isActive,
+                    startsAt,
+                    endsAt
+                ]
+            );
+
+            savedOfferId = result.insertId;
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            offerId: savedOfferId,
+            message: offerId
+                ? "Персональний промокод оновлено"
+                : "Персональний промокод створено"
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("SAVE PERSONAL PROMO CODE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
     }
 });
 
