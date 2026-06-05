@@ -3754,6 +3754,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const allowOutOfStock = Boolean(req.body.allowOutOfStock);
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
         const customerSource = String(req.body.customerSource || "").trim() || null;
+        const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -4137,9 +4138,33 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             Number(welcomeDiscount.discountAmount || 0)
         );
 
-        const totalAmount = Math.max(
+        const totalAfterWelcomeDiscount = Math.max(
             0,
             totalAfterFocusPromo - welcomeDiscountAmount
+        );
+
+        const personalPromoCodeDiscount = await calculateStaffPersonalPromoCodeDiscount(
+            connection,
+            saleRows,
+            customerId,
+            personalPromoCode
+        );
+
+        if (personalPromoCode && !personalPromoCodeDiscount.isValid) {
+            return res.status(400).json({
+                ok: false,
+                error: personalPromoCodeDiscount.message || "Промокод не застосовано"
+            });
+        }
+
+        const personalPromoCodeDiscountAmount = Math.min(
+            totalAfterWelcomeDiscount,
+            Number(personalPromoCodeDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterWelcomeDiscount - personalPromoCodeDiscountAmount
         );
 
         const focusPromoNote = focusProductDiscountAmount > 0
@@ -4150,6 +4175,10 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             ? welcomeDiscount.note || `Welcome-знижка 10%: -${welcomeDiscountAmount} грн`
             : "";
 
+        const personalPromoCodeNote = personalPromoCodeDiscountAmount > 0
+            ? personalPromoCodeDiscount.note || `Промокод ${personalPromoCode}: -${personalPromoCodeDiscountAmount} грн`
+            : "";
+        
         if (!grossTotalAmount || grossTotalAmount <= 0) {
             return res.status(400).json({
                 ok: false,
@@ -4276,6 +4305,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             paymentType,
             warehouseId,
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
+            promoCode: personalPromoCode || "",
             allowOutOfStock,
             orderId
         };
@@ -4330,6 +4360,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             focusPromoNote,
             welcomeDiscountAmount,
             welcomeDiscountNote,
+            personalPromoCodeDiscountAmount,
+            personalPromoCodeNote,
             totalAmount,
             paymentAmount,
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
@@ -4364,6 +4396,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
         const externalOrderId = String(req.body.orderId || "").trim();
         const customerSource = String(req.body.customerSource || "").trim() || null;
+        const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -4684,9 +4717,35 @@ app.post("/api/staff/create-sale", async (req, res) => {
             Number(welcomeDiscount.discountAmount || 0)
         );
 
-        const totalAmount = Math.max(
+        const totalAfterWelcomeDiscount = Math.max(
             0,
             totalAfterFocusPromo - welcomeDiscountAmount
+        );
+
+        const personalPromoCodeDiscount = await calculateStaffPersonalPromoCodeDiscount(
+            connection,
+            saleRows,
+            customerId,
+            personalPromoCode
+        );
+
+        if (personalPromoCode && !personalPromoCodeDiscount.isValid) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: personalPromoCodeDiscount.message || "Промокод не застосовано"
+            });
+        }
+
+        const personalPromoCodeDiscountAmount = Math.min(
+            totalAfterWelcomeDiscount,
+            Number(personalPromoCodeDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterWelcomeDiscount - personalPromoCodeDiscountAmount
         );
 
         const focusPromoNote = focusProductDiscountAmount > 0
@@ -4695,6 +4754,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const welcomeDiscountNote = welcomeDiscountAmount > 0
             ? `, ${welcomeDiscount.note || `Welcome-знижка 10%: -${welcomeDiscountAmount} грн`}`
+            : "";
+
+        const personalPromoCodeNote = personalPromoCodeDiscountAmount > 0
+            ? `, ${personalPromoCodeDiscount.note || `Промокод ${personalPromoCode}: -${personalPromoCodeDiscountAmount} грн`}`
             : "";
 
         const shouldMarkWelcomeDiscountUsed =
@@ -5166,7 +5229,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${personalPromoCodeNote}${certificateNote}`
             ]
         );
 
@@ -5273,6 +5336,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 focusPromoNote,
                 welcomeDiscountAmount,
                 welcomeDiscountNote,
+                personalPromoCodeDiscountAmount,
+                personalPromoCodeNote,
                 totalAmount,
                 paymentLabel,
                 customerName: customer ? customer.name : "Без клієнта",
