@@ -1324,6 +1324,97 @@ async function calculateStaffWelcomeDiscount(connection, saleRows, customerId, w
     };
 }
 
+function buildStaffPersonalPromoCodeItems(saleRows) {
+    return (Array.isArray(saleRows) ? saleRows : []).map(row => {
+        const stock = row?.stock || {};
+        const productName = row?.isCertificateProduct
+            ? "Сертифікат"
+            : String(stock.product_display_name || stock.display_name || "");
+
+        return {
+            name: productName,
+            product_name: productName,
+            display_name: productName,
+            label: stock.product_label || "",
+            product_label: stock.product_label || "",
+            category_slug: stock.category_slug || "",
+            price: Number(row.unitPrice || stock.retail_price || 0),
+            quantity: Number(row.quantity || 0)
+        };
+    });
+}
+
+async function calculateStaffPersonalPromoCodeDiscount(connection, saleRows, customerId, promoCode) {
+    const cleanPromoCode = String(promoCode || "").trim().toUpperCase();
+
+    if (!cleanPromoCode) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: true,
+            message: "",
+            promoCode: ""
+        };
+    }
+
+    if (!Number(customerId || 0)) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "Персональний промокод доступний тільки зареєстрованим клієнтам",
+            promoCode: cleanPromoCode
+        };
+    }
+
+    const customerStatus = await getPersonalPromoCustomerStatus(
+        connection,
+        customerId
+    );
+
+    if (!customerStatus) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "Клієнта для персонального промокоду не знайдено",
+            promoCode: cleanPromoCode
+        };
+    }
+
+    const offer = await findActivePersonalPromoCode(
+        connection,
+        cleanPromoCode,
+        customerStatus
+    );
+
+    const checkResult = buildPersonalPromoCheckResult(
+        offer,
+        buildStaffPersonalPromoCodeItems(saleRows)
+    );
+
+    if (!checkResult.valid) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: checkResult.message || "Промокод не застосовано",
+            promoCode: cleanPromoCode
+        };
+    }
+
+    const discountAmount = Number(checkResult.discountAmount || 0);
+
+    return {
+        discountAmount,
+        note: `Промокод ${cleanPromoCode}: -${discountAmount} грн`,
+        isValid: true,
+        message: checkResult.message || "Знижка застосована",
+        promoCode: cleanPromoCode,
+        offerId: checkResult.offerId || null
+    };
+}
+
 /* ===================== STAFF: SALE PREVIEW ===================== */
 
 app.post("/api/staff/sale-preview", async (req, res) => {
@@ -1333,6 +1424,7 @@ app.post("/api/staff/sale-preview", async (req, res) => {
         const staffId = Number(req.body.staffId || 0);
         const customerId = Number(req.body.customerId || 0);
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
+        const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
         if (!staffId) {
@@ -1481,9 +1573,29 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             Number(welcomeDiscount.discountAmount || 0)
         );
 
-        const totalAmount = Math.max(
+        const totalAfterWelcomeDiscount = Math.max(
             0,
             totalAfterFocusPromo - welcomeDiscountAmount
+        );
+
+        const personalPromoCodeDiscount = await calculateStaffPersonalPromoCodeDiscount(
+            connection,
+            saleRows,
+            customerId,
+            personalPromoCode
+        );
+
+        const personalPromoCodeDiscountAmount =
+            personalPromoCodeDiscount.isValid
+                ? Math.min(
+                    totalAfterWelcomeDiscount,
+                    Number(personalPromoCodeDiscount.discountAmount || 0)
+                )
+                : 0;
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterWelcomeDiscount - personalPromoCodeDiscountAmount
         );
 
         return res.json({
@@ -1494,6 +1606,16 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             welcomeDiscountAmount,
             welcomeDiscountNote: welcomeDiscount.note || "",
             welcomeDiscountAvailable: Boolean(welcomeDiscount.isAvailable),
+            personalPromoCodeDiscountAmount,
+            personalPromoCodeNote: personalPromoCodeDiscountAmount > 0
+                ? personalPromoCodeDiscount.note
+                : "",
+            personalPromoCodeValid: personalPromoCode
+                ? Boolean(personalPromoCodeDiscount.isValid)
+                : true,
+            personalPromoCodeMessage: personalPromoCode
+                ? personalPromoCodeDiscount.message
+                : "",
             totalAmount
         });
     } catch (err) {
