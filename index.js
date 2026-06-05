@@ -1458,10 +1458,14 @@ app.post("/api/staff/sale-preview", async (req, res) => {
 
         const staffUser = staffRows[0];
 
+        const assignedWarehouseId = Number(staffUser.warehouse_id || 0);
+
         const warehouseId =
-            String(staffUser.role || "") === "admin"
-                ? warehouseIdFromBody
-                : Number(staffUser.warehouse_id || 0);
+            assignedWarehouseId > 0
+                ? assignedWarehouseId
+                : String(staffUser.role || "") === "admin"
+                    ? warehouseIdFromBody
+                    : 0;
 
         const saleItems = bodyItems
             .map(item => ({
@@ -3838,10 +3842,14 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             });
         }
 
+        const assignedWarehouseId = Number(staff.warehouse_id || 0);
+
         const warehouseId =
-            staff.role === "admin"
-                ? warehouseIdFromBody
-                : Number(staff.warehouse_id || 0);
+            assignedWarehouseId > 0
+                ? assignedWarehouseId
+                : staff.role === "admin"
+                    ? warehouseIdFromBody
+                    : 0;
 
         if (!warehouseId) {
             return res.status(400).json({
@@ -4484,10 +4492,14 @@ app.post("/api/staff/create-sale", async (req, res) => {
             });
         }
 
+        const assignedWarehouseId = Number(staff.warehouse_id || 0);
+
         const warehouseId =
-            staff.role === "admin"
-                ? warehouseIdFromBody
-                : Number(staff.warehouse_id || 0);
+            assignedWarehouseId > 0
+                ? assignedWarehouseId
+                : staff.role === "admin"
+                    ? warehouseIdFromBody
+                    : 0;
 
         if (!warehouseId) {
             return res.status(400).json({
