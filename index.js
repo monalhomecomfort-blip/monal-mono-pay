@@ -2248,6 +2248,224 @@ app.post("/api/staff/save-personal-promo-code", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: SAVE PERSONAL PERCENT DISCOUNT ===================== */
+
+function normalizePersonalOfferCategoriesForDb(value) {
+    const rawItems = Array.isArray(value)
+        ? value
+        : String(value || "all").split(",");
+
+    const categories = [
+        ...new Set(
+            rawItems
+                .map(item => String(item || "").trim().toLowerCase())
+                .filter(item => item && item !== "all")
+        )
+    ];
+
+    return categories.length ? categories.join(",") : null;
+}
+
+app.post("/api/staff/save-personal-percent-offer", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const offerId = Number(req.body.offerId || 0);
+
+        const title = String(req.body.title || "").trim();
+        const offerTextRaw = String(req.body.offerText || "").trim();
+        const discountPercent = Number(req.body.discountPercent || 0);
+        const startsAt = normalizePersonalOfferDateTime(req.body.startsAt);
+        const endsAt = normalizePersonalOfferDateTime(req.body.endsAt);
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        const requiredCustomerStatus = normalizePersonalOfferStatusForDb(
+            req.body.requiredCustomerStatus
+        );
+
+        const requiredCategorySlug = normalizePersonalOfferCategoriesForDb(
+            req.body.requiredCategorySlug || req.body.requiredCategorySlugs || req.body.categories
+        );
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!title) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву персональної % знижки"
+            });
+        }
+
+        if (discountPercent <= 0 || discountPercent > 99) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть % знижки від 1 до 99"
+            });
+        }
+
+        if (req.body.startsAt && !startsAt) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректна дата початку"
+            });
+        }
+
+        if (req.body.endsAt && !endsAt) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректна дата завершення"
+            });
+        }
+
+        if (startsAt && endsAt && new Date(startsAt).getTime() >= new Date(endsAt).getTime()) {
+            return res.status(400).json({
+                ok: false,
+                error: "Дата завершення має бути пізніше дати початку"
+            });
+        }
+
+        const categoryText = requiredCategorySlug
+            ? `на обрані категорії: ${requiredCategorySlug}`
+            : "на всі категорії";
+
+        const offerText = offerTextRaw || `Персональна знижка ${discountPercent}% ${categoryText}.`;
+
+        await connection.beginTransaction();
+
+        let savedOfferId = offerId;
+
+        if (offerId) {
+            const [existingRows] = await connection.query(
+                `
+                SELECT
+                    id
+                FROM personal_offers
+                WHERE id = ?
+                  AND offer_type = 'discount'
+                LIMIT 1
+                `,
+                [offerId]
+            );
+
+            if (!existingRows.length) {
+                await connection.rollback();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Персональну % знижку не знайдено"
+                });
+            }
+
+            await connection.query(
+                `
+                UPDATE personal_offers
+                SET
+                    title = ?,
+                    offer_text = ?,
+                    offer_type = 'discount',
+                    promo_code = NULL,
+                    discount_percent = ?,
+                    discount_amount = NULL,
+                    min_order_amount = 0,
+                    required_category_slug = ?,
+                    required_discount_level = NULL,
+                    required_customer_status = ?,
+                    is_active = ?,
+                    starts_at = ?,
+                    ends_at = ?
+                WHERE id = ?
+                  AND offer_type = 'discount'
+                `,
+                [
+                    title,
+                    offerText,
+                    discountPercent,
+                    requiredCategorySlug,
+                    requiredCustomerStatus,
+                    isActive,
+                    startsAt,
+                    endsAt,
+                    offerId
+                ]
+            );
+
+        } else {
+            const [result] = await connection.query(
+                `
+                INSERT INTO personal_offers
+                (
+                    title,
+                    offer_text,
+                    offer_type,
+                    promo_code,
+                    discount_percent,
+                    discount_amount,
+                    min_order_amount,
+                    required_category_slug,
+                    required_discount_level,
+                    required_customer_status,
+                    is_active,
+                    starts_at,
+                    ends_at,
+                    created_at
+                )
+                VALUES (?, ?, 'discount', NULL, ?, NULL, 0, ?, NULL, ?, ?, ?, ?, NOW())
+                `,
+                [
+                    title,
+                    offerText,
+                    discountPercent,
+                    requiredCategorySlug,
+                    requiredCustomerStatus,
+                    isActive,
+                    startsAt,
+                    endsAt
+                ]
+            );
+
+            savedOfferId = result.insertId;
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            offerId: savedOfferId,
+            message: offerId
+                ? "Персональну % знижку оновлено"
+                : "Персональну % знижку створено"
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("SAVE PERSONAL PERCENT DISCOUNT ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== PARTNERSHIP REQUEST ===================== */
 app.post("/api/partnership-request", async (req, res) => {
     try {
