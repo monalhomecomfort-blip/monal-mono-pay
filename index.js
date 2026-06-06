@@ -1010,6 +1010,8 @@ let PUBLIC_PROMO_CAMPAIGNS_CACHE = {
 
 app.get("/api/public-promo-campaigns", async (req, res) => {
     try {
+        await deactivateExpiredPromos(db);
+        
         const now = Date.now();
 
         if (PUBLIC_PROMO_CAMPAIGNS_CACHE.expiresAt > now) {
@@ -1862,6 +1864,8 @@ app.get("/api/personal-offers", async (req, res) => {
 
         const customerStatus = String(users[0].customer_status || "general").toLowerCase();
 
+        await deactivateExpiredPromos(db);
+
         const [rows] = await db.query(
             `
             SELECT
@@ -1977,6 +1981,8 @@ app.post("/api/staff/personal-offers-list", async (req, res) => {
                 error: adminCheck.error
             });
         }
+
+        await deactivateExpiredPromos(db);
 
         const [offers] = await db.query(
             `
@@ -3269,6 +3275,37 @@ function clearPublicPromoCampaignsCache() {
     };
 }
 
+async function deactivateExpiredPromos(connection = db) {
+    const [campaignResult] = await connection.query(
+        `
+        UPDATE promo_campaigns
+        SET is_active = 0
+        WHERE is_active = 1
+          AND ends_at IS NOT NULL
+          AND ends_at < NOW()
+        `
+    );
+
+    const [personalResult] = await connection.query(
+        `
+        UPDATE personal_offers
+        SET is_active = 0
+        WHERE is_active = 1
+          AND ends_at IS NOT NULL
+          AND ends_at < NOW()
+        `
+    );
+
+    if (Number(campaignResult?.affectedRows || 0) > 0) {
+        clearPublicPromoCampaignsCache();
+    }
+
+    return {
+        campaigns: Number(campaignResult?.affectedRows || 0),
+        personalOffers: Number(personalResult?.affectedRows || 0)
+    };
+}
+
 async function findFocusPromoConflicts({
     connection = db,
     promoId = 0,
@@ -3326,6 +3363,8 @@ app.post("/api/staff/focus-promos-list", async (req, res) => {
                 error: adminCheck.error
             });
         }
+
+        await deactivateExpiredPromos(db);
 
         const [campaigns] = await db.query(
             `
