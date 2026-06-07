@@ -2472,6 +2472,360 @@ app.post("/api/staff/save-personal-percent-offer", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: SAVE PERSONAL GIFT OFFER ===================== */
+
+function normalizePersonalGiftProductIdsForDb(value) {
+    const rawItems = Array.isArray(value)
+        ? value
+        : String(value || "").split(",");
+
+    const productIds = [
+        ...new Set(
+            rawItems
+                .map(item => Number(item || 0))
+                .filter(id => Number.isInteger(id) && id > 0)
+        )
+    ];
+
+    return productIds.length ? productIds.join(",") : "";
+}
+
+async function getPersonalGiftProductsByIds(connection, productIdsText) {
+    const productIds = String(productIdsText || "")
+        .split(",")
+        .map(item => Number(item || 0))
+        .filter(id => Number.isInteger(id) && id > 0);
+
+    if (!productIds.length) return [];
+
+    const placeholders = productIds.map(() => "?").join(",");
+
+    const [rows] = await connection.query(
+        `
+        SELECT
+            id,
+            product_key,
+            display_name,
+            product_label,
+            category_slug
+        FROM products_catalog
+        WHERE id IN (${placeholders})
+        `,
+        productIds
+    );
+
+    const rowsById = new Map(
+        rows.map(row => [
+            Number(row.id || 0),
+            row
+        ])
+    );
+
+    return productIds
+        .map(id => rowsById.get(id))
+        .filter(Boolean);
+}
+
+function getPersonalGiftProductDisplayName(product) {
+    return String(
+        product?.display_name ||
+        product?.product_name ||
+        product?.product_key ||
+        ""
+    ).trim();
+}
+
+app.post("/api/staff/save-personal-gift-offer", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const offerId = Number(req.body.offerId || 0);
+
+        const title = String(req.body.title || "").trim();
+        const giftProductId = Number(req.body.giftProductId || 0);
+        const startsAt = normalizePersonalOfferDateTime(req.body.startsAt);
+        const endsAt = normalizePersonalOfferDateTime(req.body.endsAt);
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        const requiredCustomerStatus = normalizePersonalOfferStatusForDb(
+            req.body.requiredCustomerStatus
+        );
+
+        const requiredCategorySlug = normalizePersonalOfferCategoriesForDb(
+            req.body.requiredCategorySlug ||
+            req.body.requiredCategorySlugs ||
+            req.body.categories
+        );
+
+        const requiredProductIds = normalizePersonalGiftProductIdsForDb(
+            req.body.requiredProductIds ||
+            req.body.requiredProductId ||
+            req.body.products
+        );
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!title) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву персонального подарунку"
+            });
+        }
+
+        if (!giftProductId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть товар-подарунок"
+            });
+        }
+
+        if (requiredCategorySlug && requiredProductIds) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть або категорії для подарунку, або товари для подарунку, не обидва варіанти одночасно"
+            });
+        }
+
+        if (!requiredCategorySlug && !requiredProductIds) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть категорії або товари, за які дається подарунок"
+            });
+        }
+
+        if (req.body.startsAt && !startsAt) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректна дата початку"
+            });
+        }
+
+        if (req.body.endsAt && !endsAt) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректна дата завершення"
+            });
+        }
+
+        if (startsAt && endsAt && new Date(startsAt).getTime() >= new Date(endsAt).getTime()) {
+            return res.status(400).json({
+                ok: false,
+                error: "Дата завершення має бути пізніше дати початку"
+            });
+        }
+
+        const [giftProductRows] = await connection.query(
+            `
+            SELECT
+                id,
+                product_key,
+                display_name,
+                product_label,
+                category_slug
+            FROM products_catalog
+            WHERE id = ?
+            LIMIT 1
+            `,
+            [giftProductId]
+        );
+
+        if (!giftProductRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Товар-подарунок не знайдено в products_catalog"
+            });
+        }
+
+        const giftProduct = giftProductRows[0];
+
+        if (isStaffCertificateStock(giftProduct)) {
+            return res.status(400).json({
+                ok: false,
+                error: "Сертифікат не можна обрати як подарунок"
+            });
+        }
+
+        const requiredProducts = await getPersonalGiftProductsByIds(
+            connection,
+            requiredProductIds
+        );
+
+        if (requiredProductIds) {
+            const expectedCount = String(requiredProductIds)
+                .split(",")
+                .filter(Boolean)
+                .length;
+
+            if (requiredProducts.length !== expectedCount) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Один або декілька товарів для подарунку не знайдені в products_catalog"
+                });
+            }
+
+            const hasCertificateRequiredProduct = requiredProducts.some(product =>
+                isStaffCertificateStock(product)
+            );
+
+            if (hasCertificateRequiredProduct) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікати не можна використовувати як умову для подарунку"
+                });
+            }
+        }
+
+        const giftProductTitle = getPersonalGiftProductDisplayName(giftProduct);
+
+        const requiredTargetForDb = requiredProductIds
+            ? `products:${requiredProductIds}`
+            : requiredCategorySlug;
+
+        const conditionText = requiredProductIds
+            ? "за купівлю товарів: " + requiredProducts
+                .map(product => getPersonalGiftProductDisplayName(product))
+                .filter(Boolean)
+                .join(", ")
+            : "за купівлю товарів з категорій: " + requiredCategorySlug;
+
+        const offerText = `Подарунок: ${giftProductTitle}. Умова: ${conditionText}.`;
+
+        await connection.beginTransaction();
+
+        let savedOfferId = offerId;
+
+        if (offerId) {
+            const [existingRows] = await connection.query(
+                `
+                SELECT
+                    id
+                FROM personal_offers
+                WHERE id = ?
+                  AND offer_type = 'gift'
+                LIMIT 1
+                `,
+                [offerId]
+            );
+
+            if (!existingRows.length) {
+                await connection.rollback();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Персональний подарунок не знайдено"
+                });
+            }
+
+            await connection.query(
+                `
+                UPDATE personal_offers
+                SET
+                    title = ?,
+                    offer_text = ?,
+                    offer_type = 'gift',
+                    promo_code = NULL,
+                    discount_percent = NULL,
+                    discount_amount = NULL,
+                    min_order_amount = NULL,
+                    required_category_slug = ?,
+                    required_discount_level = ?,
+                    required_customer_status = ?,
+                    is_active = ?,
+                    starts_at = ?,
+                    ends_at = ?
+                WHERE id = ?
+                  AND offer_type = 'gift'
+                `,
+                [
+                    title,
+                    offerText,
+                    requiredTargetForDb,
+                    giftProductId,
+                    requiredCustomerStatus,
+                    isActive,
+                    startsAt,
+                    endsAt,
+                    offerId
+                ]
+            );
+
+        } else {
+            const [result] = await connection.query(
+                `
+                INSERT INTO personal_offers
+                (
+                    title,
+                    offer_text,
+                    offer_type,
+                    promo_code,
+                    discount_percent,
+                    discount_amount,
+                    min_order_amount,
+                    required_category_slug,
+                    required_discount_level,
+                    required_customer_status,
+                    is_active,
+                    starts_at,
+                    ends_at,
+                    created_at
+                )
+                VALUES (?, ?, 'gift', NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NOW())
+                `,
+                [
+                    title,
+                    offerText,
+                    requiredTargetForDb,
+                    giftProductId,
+                    requiredCustomerStatus,
+                    isActive,
+                    startsAt,
+                    endsAt
+                ]
+            );
+
+            savedOfferId = result.insertId;
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            offerId: savedOfferId,
+            message: offerId
+                ? "Персональний подарунок оновлено"
+                : "Персональний подарунок створено"
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("SAVE PERSONAL GIFT OFFER ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== PARTNERSHIP REQUEST ===================== */
 app.post("/api/partnership-request", async (req, res) => {
     try {
