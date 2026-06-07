@@ -5016,6 +5016,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const externalOrderId = String(req.body.orderId || "").trim();
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
+        const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -5555,6 +5556,168 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const orderId = externalOrderId || "STAFF-" + Date.now();
 
+        let personalGiftOffer = null;
+        let personalGiftStock = null;
+        let personalGiftNote = "";
+
+        if (personalGiftOfferId) {
+            if (!customer) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Персональний подарунок доступний тільки для зареєстрованого клієнта"
+                });
+            }
+
+            const giftCustomerStatus = String(customer.customer_status || "general")
+                .trim()
+                .toLowerCase();
+
+            const [giftOfferRows] = await connection.query(
+                `
+                SELECT
+                    id,
+                    title,
+                    offer_text,
+                    required_discount_level,
+                    COALESCE(required_customer_status, 'all') AS required_customer_status
+                FROM personal_offers
+                WHERE id = ?
+                  AND offer_type = 'gift'
+                  AND is_active = 1
+                  AND (starts_at IS NULL OR starts_at <= NOW())
+                  AND (ends_at IS NULL OR ends_at >= NOW())
+                  AND (
+                        COALESCE(required_customer_status, '') = ''
+                        OR FIND_IN_SET('all', REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+                        OR FIND_IN_SET(?, REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+                  )
+                LIMIT 1
+                `,
+                [
+                    personalGiftOfferId,
+                    giftCustomerStatus
+                ]
+            );
+
+            if (!giftOfferRows.length) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Персональний подарунок неактивний або недоступний для цього клієнта"
+                });
+            }
+
+            personalGiftOffer = giftOfferRows[0];
+
+            const giftProductId = Number(personalGiftOffer.required_discount_level || 0);
+
+            if (!giftProductId) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "У персональному подарунку не вказано товар-подарунок"
+                });
+            }
+
+            const [giftStockRows] = await connection.query(
+                `
+                SELECT
+                    sb.id,
+                    sb.warehouse_id,
+                    sb.warehouse_name,
+                    sb.product_id,
+                    sb.product_key,
+                    sb.product_display_name,
+                    sb.retail_price,
+                    sb.cost_price,
+                    sb.realization_price,
+                    sb.initial_quantity,
+                    sb.sales_quantity,
+                    sb.final_quantity,
+                    p.product_key AS catalog_product_key,
+                    p.display_name AS catalog_display_name,
+                    p.product_label,
+                    p.category_slug
+                FROM stock_balances sb
+                LEFT JOIN products_catalog p
+                    ON p.id = sb.product_id
+                WHERE sb.warehouse_id = ?
+                  AND sb.product_id = ?
+                LIMIT 1
+                FOR UPDATE
+                `,
+                [
+                    warehouseId,
+                    giftProductId
+                ]
+            );
+
+            if (!giftStockRows.length) {
+                await connection.rollback();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Товар-подарунок не знайдено на обраному складі"
+                });
+            }
+
+            personalGiftStock = giftStockRows[0];
+
+            personalGiftStock.product_display_name =
+                personalGiftStock.product_display_name ||
+                personalGiftStock.catalog_display_name ||
+                "Подарунок";
+
+            if (
+                isStaffCertificateStock({
+                    product_key: personalGiftStock.product_key || personalGiftStock.catalog_product_key,
+                    product_display_name: personalGiftStock.product_display_name,
+                    display_name: personalGiftStock.catalog_display_name,
+                    product_label: personalGiftStock.product_label,
+                    category_slug: personalGiftStock.category_slug
+                })
+            ) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "Сертифікат не можна списати як подарунок"
+                });
+            }
+
+            const currentGiftBalance =
+                personalGiftStock.final_quantity !== null && personalGiftStock.final_quantity !== undefined
+                    ? Number(personalGiftStock.final_quantity || 0)
+                    : Number(personalGiftStock.initial_quantity || 0) - Number(personalGiftStock.sales_quantity || 0);
+
+            if (!allowOutOfStock && currentGiftBalance < 1) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    code: "out_of_stock_confirm_required",
+                    outOfStockItems: [
+                        {
+                            productName: `${personalGiftStock.product_display_name} (подарунок до акції)`,
+                            currentBalance: currentGiftBalance,
+                            requestedQuantity: 1
+                        }
+                    ],
+                    productName: `${personalGiftStock.product_display_name} (подарунок до акції)`,
+                    currentBalance: currentGiftBalance,
+                    requestedQuantity: 1,
+                    error: "Недостатньо залишку по товару-подарунку"
+                });
+            }
+
+            personalGiftNote =
+                `, подарунок до акції: ${personalGiftStock.product_display_name}`;
+        }
+
         function getStaffSaleProductText(row) {
             const baseName = String(row?.stock?.product_display_name || "Товар").trim();
             const productKey = String(row?.stock?.product_key || "").trim().toLowerCase();
@@ -5578,9 +5741,20 @@ app.post("/api/staff/create-sale", async (req, res) => {
             return `${baseName} (аромати: ${aromas.join(", ")})`;
         }
 
-        const itemsText = saleRows.map(row =>
+        const saleItemsText = saleRows.map(row =>
             `${getStaffSaleProductText(row)} × ${row.quantity} — ${row.unitPrice} грн = ${row.rowTotal} грн`
         ).join("\n");
+
+        const giftItemsText = personalGiftStock
+            ? `${personalGiftStock.product_display_name} × 1 — 0 грн = 0 грн (подарунок до акції)`
+            : "";
+
+        const itemsText = [
+            saleItemsText,
+            giftItemsText
+        ]
+            .filter(Boolean)
+            .join("\n");
 
         const discoveryMovementRows = [];
 
@@ -5763,6 +5937,57 @@ app.post("/api/staff/create-sale", async (req, res) => {
             );
         }
 
+        if (personalGiftStock) {
+            await connection.query(
+                `
+                UPDATE stock_balances
+                SET sales_quantity = sales_quantity + 1
+                WHERE id = ?
+                  AND warehouse_id = ?
+                `,
+                [
+                    personalGiftStock.id,
+                    warehouseId
+                ]
+            );
+
+            await connection.query(
+                `
+                INSERT INTO stock_movements
+                (
+                    document_number,
+                    movement_type,
+                    warehouse_id,
+                    warehouse_name,
+                    stock_balance_id,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    quantity,
+                    retail_price,
+                    cost_price,
+                    realization_price,
+                    created_by_staff_id,
+                    created_by_name
+                )
+                VALUES (?, 'sale_gift', ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+                `,
+                [
+                    orderId,
+                    personalGiftStock.warehouse_id,
+                    personalGiftStock.warehouse_name,
+                    personalGiftStock.id,
+                    personalGiftStock.product_id,
+                    personalGiftStock.product_key,
+                    `${personalGiftStock.product_display_name} (подарунок до акції)`,
+                    personalGiftStock.cost_price,
+                    personalGiftStock.realization_price,
+                    staff.id,
+                    staff.name
+                ]
+            );
+        }
+
         for (const movementRow of discoveryMovementRows) {
             const stock = movementRow.stock;
 
@@ -5852,7 +6077,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${personalPromoCodeNote}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${personalPromoCodeNote}${personalGiftNote}${certificateNote}`
             ]
         );
 
