@@ -7958,12 +7958,33 @@ app.post("/api/staff/sales-report", async (req, res) => {
                 const quantity = Number(item.quantity || 0);
                 if (!quantity) return;
 
-                const retailPrice = Number(item.unitPrice || product?.price || 0);
-                const rowGrossTotal = Number(item.rowTotal || retailPrice * quantity);
+                const itemProductName = String(item.productName || "").trim();
+                const itemProductNameLower = normalizeText(itemProductName);
 
-                let rowRetailAmount = Math.round(rowGrossTotal * reportRetailRatio);
+                const isGiftReportItem =
+                    itemProductNameLower.includes("подарунок до акції");
+
+                const itemUnitPrice = Number(item.unitPrice);
+                const itemRowTotal = Number(item.rowTotal);
+
+                const retailPrice = isGiftReportItem
+                    ? 0
+                    : Number.isFinite(itemUnitPrice)
+                        ? itemUnitPrice
+                        : Number(product?.price || 0);
+
+                const rowGrossTotal = isGiftReportItem
+                    ? 0
+                    : Number.isFinite(itemRowTotal)
+                        ? itemRowTotal
+                        : retailPrice * quantity;
+
+                let rowRetailAmount = isGiftReportItem
+                    ? 0
+                    : Math.round(rowGrossTotal * reportRetailRatio);
 
                 if (
+                    !isGiftReportItem &&
                     reportRetailRatio < 1 &&
                     itemIndex === parsedItems.length - 1
                 ) {
@@ -7984,20 +8005,23 @@ app.post("/api/staff/sales-report", async (req, res) => {
 
                 allocatedRetailNetTotal += rowRetailAmount;
 
-                const costPrice = Number(product?.cost_price || 0);
-                const realizationPrice = Number(product?.realization_price || 0);
+                const costPrice = isGiftReportItem
+                    ? 0
+                    : Number(product?.cost_price || 0);
+
+                const realizationPrice = isGiftReportItem
+                    ? 0
+                    : Number(product?.realization_price || 0);
 
                 const productId = Number(product?.id || 0);
-
-                const itemProductName = String(item.productName || "").trim();
-                const itemProductNameLower = normalizeText(itemProductName);
 
                 const isDiscoveryReportItem =
                     itemProductNameLower.includes("discovery") ||
                     itemProductNameLower.includes("діскавер");
 
-                const productName =
-                    isDiscoveryReportItem && itemProductNameLower.includes("аромати:")
+                const productName = isGiftReportItem
+                    ? itemProductName
+                    : isDiscoveryReportItem && itemProductNameLower.includes("аромати:")
                         ? itemProductName
                         : (product?.display_name || itemProductName);
 
