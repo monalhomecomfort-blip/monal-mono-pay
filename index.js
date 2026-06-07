@@ -7204,7 +7204,7 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
             FROM stock_movements
             WHERE created_at >= ?
               AND created_at < ?
-              AND movement_type IN ('transfer_in', 'transfer_return', 'sale', 'sale_discovery')
+              AND movement_type IN ('transfer_in', 'transfer_return', 'sale', 'sale_discovery', 'sale_gift')
             `,
             [startAt, endExclusive]
         );
@@ -7220,7 +7220,7 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
                 quantity
             FROM stock_movements
             WHERE created_at >= ?
-              AND movement_type IN ('transfer_in', 'transfer_return', 'sale', 'sale_discovery')
+              AND movement_type IN ('transfer_in', 'transfer_return', 'sale', 'sale_discovery', 'sale_gift')
             `,
             [startAt]
         );
