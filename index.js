@@ -7268,7 +7268,11 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
 
                     if (
                         movementWarehouseId === productionWarehouseId &&
-                        (movementType === "sale" || movementType === "sale_discovery")
+                        (
+                            movementType === "sale" ||
+                            movementType === "sale_discovery" ||
+                            movementType === "sale_gift"
+                        )
                     ) {
                         sales += quantity;
 
@@ -7298,7 +7302,11 @@ app.post("/api/staff/stock-movement-report", async (req, res) => {
 
                 if (
                     movementWarehouseId === rowWarehouseId &&
-                    (movementType === "sale" || movementType === "sale_discovery")
+                    (
+                        movementType === "sale" ||
+                        movementType === "sale_discovery" ||
+                        movementType === "sale_gift"
+                    )
                 ) {
                     sales += quantity;
 
