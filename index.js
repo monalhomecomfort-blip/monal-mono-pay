@@ -4370,6 +4370,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
+        const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -4925,6 +4926,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             warehouseId,
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
             promoCode: personalPromoCode || "",
+            personalGiftOfferId,
             allowOutOfStock,
             orderId
         };
