@@ -7981,14 +7981,21 @@ app.post("/api/staff/sales-report", async (req, res) => {
                 .filter(line => !line.startsWith("↳"))
                 .map(line => line.replace(/^•\s*/, "").trim())
                 .map(line => {
+                    const lineIsGift = normalizeText(line).includes("подарунок до акції");
+
                     const staffMatch = line.match(/^(.+?)\s*[×x]\s*(\d+)\s*[—-]\s*([\d.,]+)\s*грн(?:\s*=\s*([\d.,]+)\s*грн)?/i);
 
                     if (staffMatch) {
                         const quantity = Number(staffMatch[2] || 0);
                         const unitPrice = parseNumber(staffMatch[3]);
+                        const productName = String(staffMatch[1] || "").trim();
 
                         return {
-                            productName: String(staffMatch[1] || "").trim(),
+                            productName: lineIsGift
+                                ? `${productName} (подарунок до акції)`
+                                : productName,
+                            productLookupName: productName,
+                            isGift: lineIsGift,
                             quantity,
                             unitPrice,
                             rowTotal: parseNumber(staffMatch[4]) || unitPrice * quantity
@@ -7999,9 +8006,14 @@ app.post("/api/staff/sales-report", async (req, res) => {
 
                     if (siteMatch) {
                         const unitPrice = parseNumber(siteMatch[2]);
+                        const productName = String(siteMatch[1] || "").trim();
 
                         return {
-                            productName: String(siteMatch[1] || "").trim(),
+                            productName: lineIsGift
+                                ? `${productName} (подарунок до акції)`
+                                : productName,
+                            productLookupName: productName,
+                            isGift: lineIsGift,
                             quantity: 1,
                             unitPrice,
                             rowTotal: unitPrice
@@ -8015,7 +8027,7 @@ app.post("/api/staff/sales-report", async (req, res) => {
                     const name = normalizeText(item.productName);
 
                     return (
-                        name &&                        
+                        name &&
                         Number(item.quantity || 0) > 0
                     );
                 });
@@ -8111,7 +8123,7 @@ app.post("/api/staff/sales-report", async (req, res) => {
             let allocatedRetailNetTotal = 0;
 
             parsedItems.forEach((item, itemIndex) => {
-                const product = findProductByName(item.productName);
+                const product = findProductByName(item.productLookupName || item.productName);
 
                 const productLabel = String(product?.product_label || "Не визначено").trim();
 
@@ -8123,9 +8135,11 @@ app.post("/api/staff/sales-report", async (req, res) => {
                 if (!quantity) return;
 
                 const itemProductName = String(item.productName || "").trim();
+                const itemLookupName = String(item.productLookupName || item.productName || "").trim();
                 const itemProductNameLower = normalizeText(itemProductName);
 
                 const isGiftReportItem =
+                    Boolean(item.isGift) ||
                     itemProductNameLower.includes("подарунок до акції");
 
                 const itemUnitPrice = Number(item.unitPrice);
@@ -8184,17 +8198,24 @@ app.post("/api/staff/sales-report", async (req, res) => {
                     itemProductNameLower.includes("діскавер");
 
                 const productName = isGiftReportItem
-                    ? itemProductName
+                    ? `${product?.display_name || itemLookupName || itemProductName} (подарунок до акції)`
                     : isDiscoveryReportItem && itemProductNameLower.includes("аромати:")
                         ? itemProductName
                         : (product?.display_name || itemProductName);
 
-                const key = [
-                    sourceKey,
-                    orderWarehouseId || 0,
+                const reportProductKey =
                     isDiscoveryReportItem && itemProductNameLower.includes("аромати:")
                         ? normalizeText(productName)
-                        : (productId || normalizeText(productName))
+                        : (productId || normalizeText(itemLookupName || productName));
+
+                const reportSaleMode = isGiftReportItem
+                    ? "gift"
+                    : "sale";
+
+                const key = [
+                    orderWarehouseId || 0,
+                    reportSaleMode,
+                    reportProductKey
                 ].join("|");
 
                 if (!reportMap.has(key)) {
