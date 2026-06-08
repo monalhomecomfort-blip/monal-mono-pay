@@ -5277,6 +5277,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 currentBalance = null;
             }
 
+            stock.product_label = product.product_label;
+            stock.category_slug = product.category_slug;
+            stock.catalog_display_name = product.display_name;
+
             const unitPrice = Number(stock.retail_price || 0);
 
             const rowTotal = unitPrice * saleItem.quantity;
@@ -5582,6 +5586,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     id,
                     title,
                     offer_text,
+                    required_category_slug,
                     required_discount_level,
                     COALESCE(required_customer_status, 'all') AS required_customer_status
                 FROM personal_offers
@@ -5615,6 +5620,157 @@ app.post("/api/staff/create-sale", async (req, res) => {
             personalGiftOffer = giftOfferRows[0];
 
             const giftProductId = Number(personalGiftOffer.required_discount_level || 0);
+            const requiredGiftTarget = String(personalGiftOffer.required_category_slug || "").trim();
+
+            function normalizeStaffGiftTargetText(value) {
+                return String(value || "")
+                    .trim()
+                    .toLowerCase()
+                    .replace(/ё/g, "е")
+                    .replace(/[’ʼ']/g, "")
+                    .replace(/[_/\\|–—-]+/g, " ")
+                    .replace(/\s+/g, " ")
+                    .trim();
+            }
+
+            function getStaffGiftCategoryAliases(value) {
+                const text = normalizeStaffGiftTargetText(value);
+                const aliases = new Set();
+
+                if (!text) {
+                    return [];
+                }
+
+                aliases.add(text);
+
+                if (
+                    text.includes("аромадифузор") ||
+                    text.includes("diffuser") ||
+                    text.includes("aromadiffuser")
+                ) {
+                    aliases.add("aromadiffusers");
+                    aliases.add("аромадифузори");
+                }
+
+                if (
+                    text.includes("рефіл") ||
+                    text.includes("refill")
+                ) {
+                    aliases.add("refills");
+                    aliases.add("рефіли");
+                }
+
+                if (
+                    text.includes("парфум") ||
+                    text.includes("perfume") ||
+                    text.includes("parfum")
+                ) {
+                    aliases.add("parfums");
+                    aliases.add("парфуми");
+                    aliases.add("парфуми для дому");
+                }
+
+                if (
+                    text.includes("discovery") ||
+                    text.includes("діскавер")
+                ) {
+                    aliases.add("discovery");
+                    aliases.add("discovery set");
+                }
+
+                if (
+                    text.includes("подарунковий") ||
+                    text.includes("gift")
+                ) {
+                    aliases.add("gift-sets");
+                    aliases.add("подарункові набори");
+                }
+
+                if (
+                    text.includes("тестер") ||
+                    text.includes("tester")
+                ) {
+                    aliases.add("testers");
+                    aliases.add("тестери");
+                }
+
+                return Array.from(aliases)
+                    .map(item => normalizeStaffGiftTargetText(item))
+                    .filter(Boolean);
+            }
+
+            function getStaffGiftSaleRowCategoryKeys(row) {
+                const stock = row?.stock || {};
+
+                const values = [
+                    stock.category_slug,
+                    stock.product_label,
+                    stock.product_key,
+                    stock.product_display_name,
+                    stock.catalog_display_name,
+                    `${stock.category_slug || ""} ${stock.product_label || ""} ${stock.product_display_name || ""}`
+                ];
+
+                return [
+                    ...new Set(
+                        values.flatMap(value => getStaffGiftCategoryAliases(value))
+                    )
+                ];
+            }
+
+            function isStaffSaleRowEligibleForPersonalGift(row, requiredTarget) {
+                const cleanTarget = String(requiredTarget || "").trim();
+
+                if (!cleanTarget) {
+                    return false;
+                }
+
+                if (row?.isCertificateProduct || isStaffCertificateStock(row?.stock)) {
+                    return false;
+                }
+
+                if (cleanTarget.toLowerCase().startsWith("products:")) {
+                    const allowedProductIds = cleanTarget
+                        .replace(/^products:/i, "")
+                        .split(",")
+                        .map(item => Number(item || 0))
+                        .filter(id => Number.isInteger(id) && id > 0);
+
+                    const rowProductId = Number(row?.stock?.product_id || 0);
+
+                    return allowedProductIds.includes(rowProductId);
+                }
+
+                const targetKeys = [
+                    ...new Set(
+                        cleanTarget
+                            .split(",")
+                            .flatMap(value => getStaffGiftCategoryAliases(value))
+                            .filter(Boolean)
+                    )
+                ];
+
+                if (!targetKeys.length) {
+                    return false;
+                }
+
+                const rowKeys = getStaffGiftSaleRowCategoryKeys(row);
+
+                return targetKeys.some(targetKey => rowKeys.includes(targetKey));
+            }
+
+            const hasGiftConditionMatch = saleRows.some(row =>
+                isStaffSaleRowEligibleForPersonalGift(row, requiredGiftTarget)
+            );
+
+            if (!hasGiftConditionMatch) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "У чеку немає товару або категорії, які дають право на цей подарунок"
+                });
+            }
 
             if (!giftProductId) {
                 await connection.rollback();
