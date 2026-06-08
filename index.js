@@ -7784,12 +7784,27 @@ app.post("/api/staff/sales-report", async (req, res) => {
         const startDate = String(req.body.startDate || "").trim();
         const endDate = String(req.body.endDate || "").trim();
 
-        const warehouses = Array.isArray(req.body.warehouses)
-            ? req.body.warehouses.map(Number).filter(Boolean)
+        const warehouseFiltersRaw = Array.isArray(req.body.warehouses)
+            ? req.body.warehouses
+                .map(item => String(item || "").trim().toLowerCase())
+                .filter(Boolean)
+                .filter(item => item !== "all")
             : [];
 
+        const virtualSalesSources = warehouseFiltersRaw.filter(item =>
+            item === "site" || item === "bot"
+        );
+
+        const warehouses = warehouseFiltersRaw
+            .map(item => Number(item))
+            .filter(id => Number.isInteger(id) && id > 0);
+
         const sources = Array.isArray(req.body.sources)
-            ? req.body.sources.map(item => String(item || "").trim()).filter(Boolean)
+            ? req.body.sources
+                .map(item => String(item || "").trim().toLowerCase())
+                .filter(Boolean)
+                .filter(item => item !== "all")
+                .filter(item => item !== "site" && item !== "bot")
             : [];
 
         const categories = Array.isArray(req.body.categories)
@@ -7931,15 +7946,14 @@ app.post("/api/staff/sales-report", async (req, res) => {
             }) || null;
         }
 
-        function normalizeSource(value, fallbackSource) {
+        function normalizeSource(value) {
             const raw = String(value || "").trim().toLowerCase();
-            const fallback = String(fallbackSource || "").trim().toLowerCase();
 
-            if (raw) return raw;
-            if (fallback === "site") return "site";
-            if (fallback === "bot") return "bot";
+            if (!raw || raw === "site" || raw === "bot" || raw === "staff") {
+                return "empty";
+            }
 
-            return "empty";
+            return raw;
         }
 
         function getSourceLabel(sourceKey) {
@@ -7950,8 +7964,6 @@ app.post("/api/staff/sales-report", async (req, res) => {
                 online_ads: "Реклама",
                 recommendation: "Рекомендація",
                 regular_customer: "Постійний покупець",
-                site: "Site",
-                bot: "Bot",
                 empty: "Не вказано"
             };
 
@@ -8077,8 +8089,15 @@ app.post("/api/staff/sales-report", async (req, res) => {
         const reportMap = new Map();
         const daySet = new Set();
 
-        orders.forEach(order => {
-            const sourceKey = normalizeSource(order.customer_source, order.source);
+         orders.forEach(order => {
+            const orderSource = String(order.source || "").trim().toLowerCase();
+
+            const orderSalesPoint =
+                orderSource === "site" || orderSource === "bot"
+                    ? orderSource
+                    : "staff";
+
+            const sourceKey = normalizeSource(order.customer_source);
 
             if (sources.length) {
                 const sourceMatches =
@@ -8089,22 +8108,43 @@ app.post("/api/staff/sales-report", async (req, res) => {
             }
 
             const orderWarehouseId =
-                String(order.source || "").toLowerCase() === "staff"
+                orderSalesPoint === "staff"
                     ? extractWarehouseId(order.order_note)
                     : 0;
 
             const orderWarehouseName =
-                orderWarehouseId
-                    ? (warehouseMap.get(orderWarehouseId) || order.delivery || "")
-                    : "";
+                orderSalesPoint === "site"
+                    ? "Сайт"
+                    : orderSalesPoint === "bot"
+                        ? "Бот"
+                        : orderWarehouseId
+                            ? (warehouseMap.get(orderWarehouseId) || order.delivery || "")
+                            : "";
 
             if (role !== "admin" && orderWarehouseId !== staffWarehouseId) {
                 return;
             }
 
-            if (role === "admin" && warehouses.length) {
-                if (!warehouses.includes(orderWarehouseId)) return;
+            if (
+                role === "admin" &&
+                (warehouses.length || virtualSalesSources.length)
+            ) {
+                const matchesStaffWarehouse =
+                    orderSalesPoint === "staff" &&
+                    warehouses.includes(orderWarehouseId);
+
+                const matchesVirtualSalesPoint =
+                    virtualSalesSources.includes(orderSalesPoint);
+
+                if (!matchesStaffWarehouse && !matchesVirtualSalesPoint) {
+                    return;
+                }
             }
+
+            const reportWarehouseKey =
+                orderSalesPoint === "staff"
+                    ? `staff:${orderWarehouseId || 0}`
+                    : orderSalesPoint;
 
             const parsedItems = parseItemsText(order.items_text);
 
@@ -8213,7 +8253,7 @@ app.post("/api/staff/sales-report", async (req, res) => {
                     : "sale";
 
                 const key = [
-                    orderWarehouseId || 0,
+                    reportWarehouseKey,
                     reportSaleMode,
                     reportProductKey
                 ].join("|");
