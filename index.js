@@ -1001,6 +1001,40 @@ app.get("/api/certificates/:userId", async (req, res) => {
     }
 });
 
+/* ===================== GET PUBLIC PRODUCTS CATALOG ===================== */
+
+app.get("/api/products-catalog-public", async (req, res) => {
+    try {
+        const [products] = await db.query(
+            `
+            SELECT
+                id,
+                product_key,
+                display_name,
+                product_label,
+                category_slug,
+                price
+            FROM products_catalog
+            WHERE is_active = 1
+            ORDER BY category_slug ASC, display_name ASC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            products
+        });
+
+    } catch (err) {
+        console.error("GET PUBLIC PRODUCTS CATALOG ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            products: [],
+            error: "server error"
+        });
+    }
+});
 /* ===================== GET ACTIVE PUBLIC PROMO CAMPAIGNS ===================== */
 
 let PUBLIC_PROMO_CAMPAIGNS_CACHE = {
