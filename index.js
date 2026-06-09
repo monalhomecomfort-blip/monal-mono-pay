@@ -4925,6 +4925,24 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             totalAfterFocusPromo - welcomeDiscountAmount
         );
 
+        const statusDiscount = await calculateStaffCustomerStatusDiscount(
+            connection,
+            saleRows,
+            customerId,
+            warehouseId,
+            focusProductDiscountAmount > 0
+        );
+
+        const statusDiscountAmount = Math.min(
+            totalAfterWelcomeDiscount,
+            Number(statusDiscount.discountAmount || 0)
+        );
+
+        const totalAfterStatusDiscount = Math.max(
+            0,
+            totalAfterWelcomeDiscount - statusDiscountAmount
+        );
+
         const personalPromoCodeDiscount = await calculateStaffPersonalPromoCodeDiscount(
             connection,
             saleRows,
@@ -4940,13 +4958,13 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         }
 
         const personalPromoCodeDiscountAmount = Math.min(
-            totalAfterWelcomeDiscount,
+            totalAfterStatusDiscount,
             Number(personalPromoCodeDiscount.discountAmount || 0)
         );
 
         const totalAmount = Math.max(
             0,
-            totalAfterWelcomeDiscount - personalPromoCodeDiscountAmount
+            totalAfterStatusDiscount - personalPromoCodeDiscountAmount
         );
 
         const focusPromoNote = focusProductDiscountAmount > 0
@@ -4955,6 +4973,10 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
 
         const welcomeDiscountNote = welcomeDiscountAmount > 0
             ? welcomeDiscount.note || `Welcome-знижка 10%: -${welcomeDiscountAmount} грн`
+            : "";
+
+        const statusDiscountNote = statusDiscountAmount > 0
+            ? statusDiscount.note || `Персональна знижка: -${statusDiscountAmount} грн`
             : "";
 
         const personalPromoCodeNote = personalPromoCodeDiscountAmount > 0
@@ -5143,6 +5165,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             focusPromoNote,
             welcomeDiscountAmount,
             welcomeDiscountNote,
+            statusDiscountAmount,
+            statusDiscountNote,
             personalPromoCodeDiscountAmount,
             personalPromoCodeNote,
             totalAmount,
@@ -5515,6 +5539,24 @@ app.post("/api/staff/create-sale", async (req, res) => {
             totalAfterFocusPromo - welcomeDiscountAmount
         );
 
+        const statusDiscount = await calculateStaffCustomerStatusDiscount(
+            connection,
+            saleRows,
+            customerId,
+            warehouseId,
+            focusProductDiscountAmount > 0
+        );
+
+        const statusDiscountAmount = Math.min(
+            totalAfterWelcomeDiscount,
+            Number(statusDiscount.discountAmount || 0)
+        );
+
+        const totalAfterStatusDiscount = Math.max(
+            0,
+            totalAfterWelcomeDiscount - statusDiscountAmount
+        );
+
         const personalPromoCodeDiscount = await calculateStaffPersonalPromoCodeDiscount(
             connection,
             saleRows,
@@ -5532,13 +5574,13 @@ app.post("/api/staff/create-sale", async (req, res) => {
         }
 
         const personalPromoCodeDiscountAmount = Math.min(
-            totalAfterWelcomeDiscount,
+            totalAfterStatusDiscount,
             Number(personalPromoCodeDiscount.discountAmount || 0)
         );
 
         const totalAmount = Math.max(
             0,
-            totalAfterWelcomeDiscount - personalPromoCodeDiscountAmount
+            totalAfterStatusDiscount - personalPromoCodeDiscountAmount
         );
 
         const focusPromoNote = focusProductDiscountAmount > 0
@@ -5547,6 +5589,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const welcomeDiscountNote = welcomeDiscountAmount > 0
             ? `, ${welcomeDiscount.note || `Welcome-знижка 10%: -${welcomeDiscountAmount} грн`}`
+            : "";
+
+        const statusDiscountNote = statusDiscountAmount > 0
+            ? `, ${statusDiscount.note || `Персональна знижка: -${statusDiscountAmount} грн`}`
             : "";
 
         const personalPromoCodeNote = personalPromoCodeDiscountAmount > 0
@@ -6398,7 +6444,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${personalPromoCodeNote}${personalGiftNote}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${statusDiscountNote}${personalPromoCodeNote}${personalGiftNote}${certificateNote}`
             ]
         );
 
@@ -6505,6 +6551,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 focusPromoNote,
                 welcomeDiscountAmount,
                 welcomeDiscountNote,
+                statusDiscountAmount,
+                statusDiscountNote,
                 personalPromoCodeDiscountAmount,
                 personalPromoCodeNote,
                 totalAmount,
