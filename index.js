@@ -1587,7 +1587,8 @@ app.post("/api/staff/sale-preview", async (req, res) => {
         const focusPromoDiscount = await calculateStaffFocusProductDiscount(
             connection,
             saleRows,
-            warehouseId
+            warehouseId,
+            customerId
         );
 
         const focusProductDiscountAmount = Math.min(
@@ -4766,7 +4767,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const focusPromoDiscount = await calculateStaffFocusProductDiscount(
             connection,
             saleRows,
-            warehouseId
+            warehouseId,
+            customerId
         );
 
         const focusProductDiscountAmount = Math.min(
@@ -5355,7 +5357,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const focusPromoDiscount = await calculateStaffFocusProductDiscount(
             connection,
             saleRows,
-            warehouseId
+            warehouseId,
+            customerId
         );
 
         const focusProductDiscountAmount = Math.min(
