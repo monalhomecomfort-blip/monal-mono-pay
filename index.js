@@ -1117,8 +1117,41 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
     }
 });
 
-async function calculateStaffFocusProductDiscount(connection, saleRows, warehouseId) {
+async function isStaffVipCustomer(connection, customerId) {
+    const normalizedCustomerId = Number(customerId || 0);
+
+    if (!normalizedCustomerId) {
+        return false;
+    }
+
+    const [customerRows] = await connection.query(
+        `
+        SELECT customer_status
+        FROM customers
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [normalizedCustomerId]
+    );
+
+    if (!customerRows.length) {
+        return false;
+    }
+
+    const status = String(customerRows[0].customer_status || "general").toLowerCase();
+
+    return status === "friends" || status === "partners";
+}
+
+async function calculateStaffFocusProductDiscount(connection, saleRows, warehouseId, customerId = 0) {
     const normalizedWarehouseId = Number(warehouseId || 0);
+
+    if (await isStaffVipCustomer(connection, customerId)) {
+        return {
+            discountAmount: 0,
+            note: ""
+        };
+    }
 
     if (!normalizedWarehouseId) {
         return {
