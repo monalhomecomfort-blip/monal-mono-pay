@@ -1359,6 +1359,113 @@ async function calculateStaffWelcomeDiscount(connection, saleRows, customerId, w
     };
 }
 
+async function calculateStaffCustomerStatusDiscount(
+    connection,
+    saleRows,
+    customerId,
+    warehouseId,
+    excludeFocusProducts = false
+) {
+    const normalizedCustomerId = Number(customerId || 0);
+
+    if (!normalizedCustomerId) {
+        return {
+            discountAmount: 0,
+            note: "",
+            percent: 0
+        };
+    }
+
+    const [customerRows] = await connection.query(
+        `
+        SELECT
+            id,
+            customer_status,
+            total_spent
+        FROM customers
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [normalizedCustomerId]
+    );
+
+    if (!customerRows.length) {
+        return {
+            discountAmount: 0,
+            note: "",
+            percent: 0
+        };
+    }
+
+    const customer = customerRows[0];
+    const discountPercent = getEffectiveDiscount(
+        customer.customer_status,
+        customer.total_spent
+    );
+
+    if (discountPercent <= 0) {
+        return {
+            discountAmount: 0,
+            note: "",
+            percent: 0
+        };
+    }
+
+    const focusProductIds = excludeFocusProducts
+        ? await getStaffActiveFocusProductIds(connection, warehouseId)
+        : new Set();
+
+    const eligibleTotal = saleRows
+        .filter(row => {
+            const productId = Number(row?.stock?.product_id || 0);
+
+            if (excludeFocusProducts && focusProductIds.has(productId)) {
+                return false;
+            }
+
+            if (row?.isCertificateProduct) {
+                return false;
+            }
+
+            if (isStaffCertificateStock(row?.stock)) {
+                return false;
+            }
+
+            return true;
+        })
+        .reduce((sum, row) => sum + Number(row.rowTotal || 0), 0);
+
+    if (eligibleTotal <= 0) {
+        return {
+            discountAmount: 0,
+            note: "",
+            percent: discountPercent
+        };
+    }
+
+    const discountAmount = Math.min(
+        eligibleTotal,
+        Math.round(eligibleTotal * (discountPercent / 100))
+    );
+
+    const status = String(customer.customer_status || "general").toLowerCase();
+
+    const label =
+        status === "friends"
+            ? "Знижка друзів"
+            : status === "partners"
+                ? "Знижка партнера"
+                : "Персональна знижка";
+
+    return {
+        discountAmount,
+        note: discountAmount > 0
+            ? `${label} ${discountPercent}%: -${discountAmount} грн`
+            : "",
+        percent: discountPercent
+    };
+}
+
 function buildStaffPersonalPromoCodeItems(saleRows) {
     return (Array.isArray(saleRows) ? saleRows : []).map(row => {
         const stock = row?.stock || {};
@@ -1618,6 +1725,24 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             totalAfterFocusPromo - welcomeDiscountAmount
         );
 
+        const statusDiscount = await calculateStaffCustomerStatusDiscount(
+            connection,
+            saleRows,
+            customerId,
+            warehouseId,
+            focusProductDiscountAmount > 0
+        );
+
+        const statusDiscountAmount = Math.min(
+            totalAfterWelcomeDiscount,
+            Number(statusDiscount.discountAmount || 0)
+        );
+
+        const totalAfterStatusDiscount = Math.max(
+            0,
+            totalAfterWelcomeDiscount - statusDiscountAmount
+        );
+
         const personalPromoCodeDiscount = await calculateStaffPersonalPromoCodeDiscount(
             connection,
             saleRows,
@@ -1628,14 +1753,14 @@ app.post("/api/staff/sale-preview", async (req, res) => {
         const personalPromoCodeDiscountAmount =
             personalPromoCodeDiscount.isValid
                 ? Math.min(
-                    totalAfterWelcomeDiscount,
+                    totalAfterStatusDiscount,
                     Number(personalPromoCodeDiscount.discountAmount || 0)
                 )
                 : 0;
 
         const totalAmount = Math.max(
             0,
-            totalAfterWelcomeDiscount - personalPromoCodeDiscountAmount
+            totalAfterStatusDiscount - personalPromoCodeDiscountAmount
         );
 
         return res.json({
@@ -1646,6 +1771,8 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             welcomeDiscountAmount,
             welcomeDiscountNote: welcomeDiscount.note || "",
             welcomeDiscountAvailable: Boolean(welcomeDiscount.isAvailable),
+            statusDiscountAmount,
+            statusDiscountNote: statusDiscount.note || "",
             personalPromoCodeDiscountAmount,
             personalPromoCodeNote: personalPromoCodeDiscountAmount > 0
                 ? personalPromoCodeDiscount.note
