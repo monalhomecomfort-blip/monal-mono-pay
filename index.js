@@ -4347,6 +4347,314 @@ app.post("/api/staff/focus-promo-save", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: PUBLIC PERCENT PROMO SAVE ===================== */
+
+function normalizePublicPercentPromoCategorySlugs(values) {
+    if (!Array.isArray(values)) return [];
+
+    return [
+        ...new Set(
+            values
+                .map(value => String(value || "").trim().toLowerCase())
+                .filter(Boolean)
+                .filter(value => value !== "certificates")
+        )
+    ];
+}
+
+function normalizePublicPercentPromoProductIds(values) {
+    if (!Array.isArray(values)) return [];
+
+    return [
+        ...new Set(
+            values
+                .map(value => Number(value || 0))
+                .filter(id => Number.isInteger(id) && id > 0)
+        )
+    ];
+}
+
+function buildPublicPercentPromoTargetSelection(categorySlugs, productIds) {
+    if (productIds.length) {
+        return `products:${productIds.join(",")}`;
+    }
+
+    if (
+        !categorySlugs.length ||
+        categorySlugs.includes("all")
+    ) {
+        return "all";
+    }
+
+    return `categories:${categorySlugs.join(",")}`;
+}
+
+app.post("/api/staff/public-percent-promo-save", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const promoId = Number(req.body.promoId || 0);
+
+        const title = String(req.body.title || "").trim();
+        const discountPercent = Number(req.body.discountPercent || 0);
+        const startsAt = String(req.body.startsAt || "").trim() || null;
+        const endsAt = String(req.body.endsAt || "").trim() || null;
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        const categorySlugs = normalizePublicPercentPromoCategorySlugs(
+            req.body.categorySlugs
+        );
+
+        const productIds = normalizePublicPercentPromoProductIds(
+            req.body.productIds
+        );
+
+        const warehouseIds = normalizePublicPercentPromoProductIds(
+            req.body.warehouseIds
+        );
+
+        if (!staffId) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            connection.release();
+
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!title) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву загальної % знижки"
+            });
+        }
+
+        if (!discountPercent || discountPercent <= 0 || discountPercent >= 100) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть знижку більше 0 і менше 100"
+            });
+        }
+
+        if (!startsAt || !endsAt) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть дату початку і дату завершення"
+            });
+        }
+
+        if (!warehouseIds.length) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть хоча б один staff-склад"
+            });
+        }
+
+        if (productIds.length) {
+            const productPlaceholders = productIds.map(() => "?").join(",");
+
+            const [allowedProducts] = await connection.query(
+                `
+                SELECT id
+                FROM products_catalog
+                WHERE id IN (${productPlaceholders})
+                  AND is_active = 1
+                  AND NOT (
+                        LOWER(TRIM(COALESCE(product_key, ''))) LIKE 'certificate_%'
+                        OR LOWER(TRIM(COALESCE(display_name, ''))) LIKE '%сертифікат%'
+                        OR LOWER(TRIM(COALESCE(product_label, ''))) LIKE '%сертифікат%'
+                        OR LOWER(TRIM(COALESCE(category_slug, ''))) = 'certificates'
+                  )
+                `,
+                productIds
+            );
+
+            if (allowedProducts.length !== productIds.length) {
+                connection.release();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "У загальну % знижку не можна додавати неактивні товари або сертифікати"
+                });
+            }
+        }
+
+        if (promoId) {
+            const [existingRows] = await connection.query(
+                `
+                SELECT id
+                FROM promo_campaigns
+                WHERE id = ?
+                  AND promo_type = 'public_percent'
+                LIMIT 1
+                `,
+                [promoId]
+            );
+
+            if (!existingRows.length) {
+                connection.release();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Загальну % знижку не знайдено"
+                });
+            }
+        }
+
+        const targetSelection = buildPublicPercentPromoTargetSelection(
+            categorySlugs,
+            productIds
+        );
+
+        const priority = 20;
+
+        await connection.beginTransaction();
+
+        let savedPromoId = promoId;
+
+        if (promoId) {
+            await connection.query(
+                `
+                UPDATE promo_campaigns
+                SET
+                    title = ?,
+                    discount_percent = ?,
+                    focus_product_id = NULL,
+                    starts_at = ?,
+                    ends_at = ?,
+                    is_active = ?,
+                    audience = 'public',
+                    exclude_certificates = 1,
+                    exclude_from_personal_discount = 1,
+                    combinable = 0,
+                    target_apply_limit = NULL,
+                    target_selection = ?,
+                    priority = ?
+                WHERE id = ?
+                  AND promo_type = 'public_percent'
+                `,
+                [
+                    title,
+                    discountPercent,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    targetSelection,
+                    priority,
+                    promoId
+                ]
+            );
+        } else {
+            const [result] = await connection.query(
+                `
+                INSERT INTO promo_campaigns
+                (
+                    title,
+                    promo_type,
+                    discount_percent,
+                    focus_product_id,
+                    starts_at,
+                    ends_at,
+                    is_active,
+                    created_at,
+                    audience,
+                    exclude_certificates,
+                    exclude_from_personal_discount,
+                    combinable,
+                    target_apply_limit,
+                    target_selection,
+                    priority
+                )
+                VALUES (?, 'public_percent', ?, NULL, ?, ?, ?, NOW(), 'public', 1, 1, 0, NULL, ?, ?)
+                `,
+                [
+                    title,
+                    discountPercent,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    targetSelection,
+                    priority
+                ]
+            );
+
+            savedPromoId = result.insertId;
+        }
+
+        await connection.query(
+            `
+            DELETE FROM promo_campaign_warehouses
+            WHERE promo_campaign_id = ?
+            `,
+            [savedPromoId]
+        );
+
+        await connection.query(
+            `
+            INSERT INTO promo_campaign_warehouses
+            (
+                promo_campaign_id,
+                warehouse_id
+            )
+            VALUES ?
+            `,
+            [
+                warehouseIds.map(warehouseId => [
+                    savedPromoId,
+                    warehouseId
+                ])
+            ]
+        );
+
+        await connection.commit();
+
+        clearPublicPromoCampaignsCache();
+        connection.release();
+
+        return res.json({
+            ok: true,
+            promoId: savedPromoId,
+            targetSelection
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error("STAFF PUBLIC PERCENT PROMO ROLLBACK ERROR:", rollbackErr);
+        }
+
+        connection.release();
+
+        console.error("STAFF PUBLIC PERCENT PROMO SAVE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: GET PRODUCTS ===================== */
 
 app.post("/api/staff/products", async (req, res) => {
