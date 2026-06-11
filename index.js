@@ -1177,6 +1177,178 @@ async function isStaffVipCustomer(connection, customerId) {
     return status === "friends" || status === "partners";
 }
 
+function isStaffPublicPromoCertificateRow(row) {
+    return (
+        row?.isCertificateProduct ||
+        isStaffCertificateStock(row?.stock)
+    );
+}
+
+function normalizeStaffPublicPromoTargetText(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/ё/g, "е")
+        .replace(/[’ʼ']/g, "")
+        .replace(/[_/\\|–—-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function getStaffPublicPromoRowCategoryKeys(row) {
+    const stock = row?.stock || {};
+
+    return [
+        stock.category_slug,
+        stock.product_label,
+        stock.product_display_name,
+        stock.catalog_display_name,
+        stock.product_key
+    ]
+        .map(normalizeStaffPublicPromoTargetText)
+        .filter(Boolean);
+}
+
+function getStaffPublicPromoTargetValues(targetSelection, prefix) {
+    const rawTarget = String(targetSelection || "").trim();
+
+    if (!rawTarget.toLowerCase().startsWith(prefix + ":")) {
+        return [];
+    }
+
+    return rawTarget
+        .replace(new RegExp("^" + prefix + ":", "i"), "")
+        .split(",")
+        .map(normalizeStaffPublicPromoTargetText)
+        .filter(Boolean);
+}
+
+function getStaffPublicPromoTargetProductIds(targetSelection) {
+    const rawTarget = String(targetSelection || "").trim();
+
+    if (!rawTarget.toLowerCase().startsWith("products:")) {
+        return [];
+    }
+
+    return rawTarget
+        .replace(/^products:/i, "")
+        .split(",")
+        .map(value => Number(value || 0))
+        .filter(id => Number.isInteger(id) && id > 0);
+}
+
+function isStaffPublicPercentPromoRowMatched(row, campaign) {
+    if (isStaffPublicPromoCertificateRow(row)) {
+        return false;
+    }
+
+    const targetSelection = String(campaign?.target_selection || "").trim();
+
+    if (!targetSelection || targetSelection.toLowerCase() === "all") {
+        return true;
+    }
+
+    if (targetSelection.toLowerCase().startsWith("products:")) {
+        const productIds = getStaffPublicPromoTargetProductIds(targetSelection);
+        const rowProductId = Number(row?.stock?.product_id || 0);
+
+        return rowProductId > 0 && productIds.includes(rowProductId);
+    }
+
+    if (targetSelection.toLowerCase().startsWith("categories:")) {
+        const categoryTargets = getStaffPublicPromoTargetValues(
+            targetSelection,
+            "categories"
+        );
+
+        if (!categoryTargets.length) {
+            return false;
+        }
+
+        const rowCategoryKeys = getStaffPublicPromoRowCategoryKeys(row);
+
+        return categoryTargets.some(target =>
+            rowCategoryKeys.includes(target)
+        );
+    }
+
+    return false;
+}
+
+function calculateStaffPublicCampaignDiscount(campaign, saleRows) {
+    const percent = Number(campaign?.discount_percent || 0);
+
+    if (percent <= 0) {
+        return {
+            discountAmount: 0,
+            note: ""
+        };
+    }
+
+    const promoType = String(campaign?.promo_type || "").trim();
+
+    let eligibleRows = [];
+
+    if (promoType === "focus_product") {
+        const focusProductId = Number(campaign?.focus_product_id || 0);
+
+        if (!focusProductId) {
+            return {
+                discountAmount: 0,
+                note: ""
+            };
+        }
+
+        eligibleRows = saleRows.filter(row =>
+            !isStaffPublicPromoCertificateRow(row) &&
+            Number(row?.stock?.product_id || 0) === focusProductId
+        );
+    }
+
+    if (promoType === "public_percent") {
+        eligibleRows = saleRows.filter(row =>
+            isStaffPublicPercentPromoRowMatched(row, campaign)
+        );
+    }
+
+    const eligibleTotal = eligibleRows.reduce(
+        (sum, row) => sum + Number(row.rowTotal || 0),
+        0
+    );
+
+    if (eligibleTotal <= 0) {
+        return {
+            discountAmount: 0,
+            note: ""
+        };
+    }
+
+    const discountAmount = Math.min(
+        eligibleTotal,
+        Math.round(eligibleTotal * (percent / 100))
+    );
+
+    if (discountAmount <= 0) {
+        return {
+            discountAmount: 0,
+            note: ""
+        };
+    }
+
+    const title =
+        campaign?.title ||
+        (
+            promoType === "public_percent"
+                ? "Загальна знижка"
+                : "Аромат дня"
+        );
+
+    return {
+        discountAmount,
+        note: `${title} ${percent}%: -${discountAmount} грн`
+    };
+}
+
 async function calculateStaffFocusProductDiscount(connection, saleRows, warehouseId, customerId = 0) {
     const normalizedWarehouseId = Number(warehouseId || 0);
 
@@ -1199,20 +1371,22 @@ async function calculateStaffFocusProductDiscount(connection, saleRows, warehous
         SELECT
             pc.id,
             pc.title,
+            pc.promo_type,
             pc.focus_product_id,
-            pc.discount_percent
+            pc.discount_percent,
+            pc.target_selection,
+            pc.priority
         FROM promo_campaigns pc
         INNER JOIN promo_campaign_warehouses pcw
             ON pcw.promo_campaign_id = pc.id
            AND pcw.warehouse_id = ?
         WHERE pc.is_active = 1
           AND pc.audience = 'public'
-          AND pc.promo_type = 'focus_product'
-          AND pc.focus_product_id IS NOT NULL
+          AND pc.promo_type IN ('focus_product', 'public_percent')
           AND (pc.starts_at IS NULL OR pc.starts_at <= NOW())
           AND (pc.ends_at IS NULL OR pc.ends_at >= NOW())
         ORDER BY pc.priority ASC, pc.id DESC
-        LIMIT 10
+        LIMIT 20
         `,
         [normalizedWarehouseId]
     );
@@ -1224,45 +1398,20 @@ async function calculateStaffFocusProductDiscount(connection, saleRows, warehous
         };
     }
 
-    let discountAmount = 0;
-    const notes = [];
-
-    saleRows.forEach(row => {
-        const productId = Number(row?.stock?.product_id || 0);
-
-        if (!productId) return;
-
-        const campaign = campaignRows.find(item =>
-            Number(item.focus_product_id || 0) === productId
+    for (const campaign of campaignRows) {
+        const campaignDiscount = calculateStaffPublicCampaignDiscount(
+            campaign,
+            saleRows
         );
 
-        if (!campaign) return;
-
-        const percent = Number(campaign.discount_percent || 0);
-
-        if (percent <= 0) return;
-
-        const rowTotal = Number(row.rowTotal || 0);
-
-        if (rowTotal <= 0) return;
-
-        const rowDiscount = Math.min(
-            rowTotal,
-            Math.round(rowTotal * (percent / 100))
-        );
-
-        if (rowDiscount <= 0) return;
-
-        discountAmount += rowDiscount;
-
-        notes.push(
-            `${campaign.title || "Аромат дня"} ${percent}%: -${rowDiscount} грн`
-        );
-    });
+        if (Number(campaignDiscount.discountAmount || 0) > 0) {
+            return campaignDiscount;
+        }
+    }
 
     return {
-        discountAmount,
-        note: notes.length ? notes.join("; ") : ""
+        discountAmount: 0,
+        note: ""
     };
 }
 
@@ -1683,6 +1832,8 @@ app.post("/api/staff/sale-preview", async (req, res) => {
                 id,
                 product_key,
                 display_name,
+                product_label,
+                category_slug,
                 price
             FROM products_catalog
             WHERE id IN (${placeholders})
@@ -1712,6 +1863,9 @@ app.post("/api/staff/sale-preview", async (req, res) => {
                     product_id: Number(product.id || 0),
                     product_key: product.product_key,
                     product_display_name: product.display_name,
+                    product_label: product.product_label,
+                    category_slug: product.category_slug,
+                    catalog_display_name: product.display_name,
                     retail_price: unitPrice
                 },
                 quantity: item.quantity,
