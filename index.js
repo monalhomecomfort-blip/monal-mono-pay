@@ -5253,6 +5253,10 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
                 currentBalance = null;
             }
 
+            stock.product_label = product.product_label;
+            stock.category_slug = product.category_slug;
+            stock.catalog_display_name = product.display_name;            
+
             const unitPrice = Number(stock.retail_price || 0);
 
             saleRows.push({
