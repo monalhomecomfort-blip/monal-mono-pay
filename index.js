@@ -6341,10 +6341,6 @@ app.post("/api/staff/create-sale", async (req, res) => {
             ? `, ${personalPercentOfferDiscount.note || `Персональна % знижка: -${personalPercentOfferDiscountAmount} грн`}`
             : "";
 
-        const personalPercentOfferNote = personalPercentOfferDiscountAmount > 0
-            ? `, ${personalPercentOfferDiscount.note || `Персональна % знижка: -${personalPercentOfferDiscountAmount} грн`}`
-            : "";
-
         const shouldMarkWelcomeDiscountUsed =
             Boolean(customer && welcomeDiscountAmount > 0 && welcomeDiscount.isAvailable);
 
