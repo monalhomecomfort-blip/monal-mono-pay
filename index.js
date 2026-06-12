@@ -4507,6 +4507,145 @@ app.post("/api/staff/focus-promo-save", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: PUBLIC PERCENT PROMOS LIST ===================== */
+
+app.post("/api/staff/public-percent-promos-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        await deactivateExpiredPromos(db);
+
+        const [campaigns] = await db.query(
+            `
+            SELECT
+                c.id,
+                c.title,
+                c.promo_type,
+                c.discount_percent,
+                c.focus_product_id,
+                DATE_FORMAT(c.starts_at, '%Y-%m-%d %H:%i:%s') AS starts_at,
+                DATE_FORMAT(c.ends_at, '%Y-%m-%d %H:%i:%s') AS ends_at,
+                c.is_active,
+                c.audience,
+                c.exclude_certificates,
+                c.exclude_from_personal_discount,
+                c.combinable,
+                c.target_apply_limit,
+                c.target_selection,
+                c.priority,
+                c.created_at
+            FROM promo_campaigns c
+            WHERE c.promo_type = 'public_percent'
+              AND c.audience = 'public'
+            ORDER BY c.starts_at DESC, c.id DESC
+            `
+        );
+
+        const campaignIds = campaigns
+            .map(campaign => Number(campaign.id || 0))
+            .filter(id => Number.isInteger(id) && id > 0);
+
+        let campaignWarehouses = [];
+
+        if (campaignIds.length) {
+            const placeholders = campaignIds.map(() => "?").join(",");
+
+            const [warehouseRows] = await db.query(
+                `
+                SELECT
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id,
+                    COALESCE(
+                        MAX(sb.warehouse_name),
+                        CONCAT('Склад ID ', pcw.warehouse_id)
+                    ) AS warehouse_name
+                FROM promo_campaign_warehouses pcw
+                LEFT JOIN stock_balances sb
+                    ON sb.warehouse_id = pcw.warehouse_id
+                WHERE pcw.promo_campaign_id IN (${placeholders})
+                GROUP BY
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id
+                ORDER BY
+                    pcw.promo_campaign_id ASC,
+                    pcw.warehouse_id ASC
+                `,
+                campaignIds
+            );
+
+            campaignWarehouses = warehouseRows;
+        }
+
+        const warehousesByCampaign = new Map();
+
+        campaignWarehouses.forEach(row => {
+            const promoId = Number(row.promo_campaign_id || 0);
+
+            if (!warehousesByCampaign.has(promoId)) {
+                warehousesByCampaign.set(promoId, []);
+            }
+
+            warehousesByCampaign.get(promoId).push({
+                warehouse_id: Number(row.warehouse_id || 0),
+                warehouse_name: row.warehouse_name || `Склад ID ${row.warehouse_id}`
+            });
+        });
+
+        return res.json({
+            ok: true,
+            campaigns: campaigns.map(campaign => {
+                const campaignWarehousesList =
+                    warehousesByCampaign.get(Number(campaign.id || 0)) || [];
+
+                return {
+                    id: campaign.id,
+                    title: campaign.title,
+                    promo_type: campaign.promo_type,
+                    discount_percent: Number(campaign.discount_percent || 0),
+                    focus_product_id: campaign.focus_product_id,
+                    starts_at: campaign.starts_at,
+                    ends_at: campaign.ends_at,
+                    is_active: Number(campaign.is_active) === 1,
+                    audience: campaign.audience,
+                    exclude_certificates: Number(campaign.exclude_certificates) === 1,
+                    exclude_from_personal_discount: Number(campaign.exclude_from_personal_discount) === 1,
+                    combinable: Number(campaign.combinable) === 1,
+                    target_apply_limit: campaign.target_apply_limit,
+                    target_selection: campaign.target_selection,
+                    priority: campaign.priority,
+                    created_at: campaign.created_at,
+                    warehouse_ids: campaignWarehousesList.map(warehouse => warehouse.warehouse_id),
+                    warehouses: campaignWarehousesList
+                };
+            })
+        });
+
+    } catch (err) {
+        console.error("STAFF PUBLIC PERCENT PROMOS LIST ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: PUBLIC PERCENT PROMO SAVE ===================== */
 
 function normalizePublicPercentPromoCategorySlugs(values) {
