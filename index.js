@@ -1750,6 +1750,7 @@ app.post("/api/staff/sale-preview", async (req, res) => {
         const customerId = Number(req.body.customerId || 0);
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
+        const skipPublicPromo = Boolean(req.body.skipPublicPromo);
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
         if (!staffId) {
@@ -1879,12 +1880,17 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             0
         );
 
-        const focusPromoDiscount = await calculateStaffFocusProductDiscount(
-            connection,
-            saleRows,
-            warehouseId,
-            customerId
-        );
+        const focusPromoDiscount = skipPublicPromo
+            ? {
+                discountAmount: 0,
+                note: ""
+            }
+            : await calculateStaffFocusProductDiscount(
+                connection,
+                saleRows,
+                warehouseId,
+                customerId
+            );
 
         const focusProductDiscountAmount = Math.min(
             grossTotalAmount,
@@ -5028,6 +5034,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
         const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
+        const skipPublicPromo = Boolean(req.body.skipPublicPromo);
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -5387,12 +5394,17 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
 
         const grossTotalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
 
-        const focusPromoDiscount = await calculateStaffFocusProductDiscount(
-            connection,
-            saleRows,
-            warehouseId,
-            customerId
-        );
+        const focusPromoDiscount = skipPublicPromo
+            ? {
+                discountAmount: 0,
+                note: ""
+            }
+            : await calculateStaffFocusProductDiscount(
+                connection,
+                saleRows,
+                warehouseId,
+                customerId
+            );
 
         const focusProductDiscountAmount = Math.min(
             grossTotalAmount,
@@ -5607,6 +5619,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
             promoCode: personalPromoCode || "",
             personalGiftOfferId,
+            skipPublicPromo,
             allowOutOfStock,
             orderId
         };
@@ -5701,6 +5714,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
         const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
+        const skipPublicPromo = Boolean(req.body.skipPublicPromo);
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -6001,12 +6015,17 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const grossTotalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
         const totalQuantity = saleRows.reduce((sum, row) => sum + row.quantity, 0);
 
-        const focusPromoDiscount = await calculateStaffFocusProductDiscount(
-            connection,
-            saleRows,
-            warehouseId,
-            customerId
-        );
+        const focusPromoDiscount = skipPublicPromo
+            ? {
+                discountAmount: 0,
+                note: ""
+            }
+            : await calculateStaffFocusProductDiscount(
+                connection,
+                saleRows,
+                warehouseId,
+                customerId
+            );
 
         const focusProductDiscountAmount = Math.min(
             grossTotalAmount,
