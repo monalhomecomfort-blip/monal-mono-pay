@@ -1740,6 +1740,170 @@ async function calculateStaffPersonalPromoCodeDiscount(connection, saleRows, cus
     };
 }
 
+async function calculateStaffPersonalPercentOfferDiscount(
+    connection,
+    saleRows,
+    customerId,
+    offerId,
+    maxDiscountBase = Infinity
+) {
+    const normalizedOfferId = Number(offerId || 0);
+    const normalizedCustomerId = Number(customerId || 0);
+
+    if (!normalizedOfferId) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: true,
+            message: "",
+            offerId: 0
+        };
+    }
+
+    if (!normalizedCustomerId) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "Персональна % знижка доступна тільки зареєстрованим клієнтам",
+            offerId: normalizedOfferId
+        };
+    }
+
+    const customerStatus = await getPersonalPromoCustomerStatus(
+        connection,
+        normalizedCustomerId
+    );
+
+    if (!customerStatus) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "Клієнта для персональної % знижки не знайдено",
+            offerId: normalizedOfferId
+        };
+    }
+
+    const [offerRows] = await connection.query(
+        `
+        SELECT
+            id,
+            title,
+            offer_type,
+            discount_percent,
+            required_category_slug,
+            COALESCE(required_customer_status, 'all') AS required_customer_status
+        FROM personal_offers
+        WHERE id = ?
+          AND offer_type = 'discount'
+          AND is_active = 1
+          AND COALESCE(discount_percent, 0) > 0
+          AND (starts_at IS NULL OR starts_at <= NOW())
+          AND (ends_at IS NULL OR ends_at >= NOW())
+          AND (
+                COALESCE(required_customer_status, '') = ''
+                OR FIND_IN_SET('all', REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+                OR FIND_IN_SET(?, REPLACE(LOWER(COALESCE(required_customer_status, 'all')), ' ', '')) > 0
+          )
+        LIMIT 1
+        `,
+        [
+            normalizedOfferId,
+            customerStatus
+        ]
+    );
+
+    if (!offerRows.length) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "Персональна % знижка неактивна або недоступна цьому клієнту",
+            offerId: normalizedOfferId
+        };
+    }
+
+    const offer = offerRows[0];
+    const percent = Number(offer.discount_percent || 0);
+
+    if (percent <= 0) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "У персональній % знижці не вказано відсоток",
+            offerId: normalizedOfferId
+        };
+    }
+
+    const requiredCategoryKeys = String(offer.required_category_slug || "")
+        .split(",")
+        .map(value => normalizeStaffPublicPromoTargetText(value))
+        .filter(value => value && value !== "all" && value !== "certificates");
+
+    const eligibleRows = saleRows.filter(row => {
+        if (isStaffPublicPromoCertificateRow(row)) {
+            return false;
+        }
+
+        if (!requiredCategoryKeys.length) {
+            return true;
+        }
+
+        const rowCategoryKeys = getStaffPublicPromoRowCategoryKeys(row);
+
+        return requiredCategoryKeys.some(categoryKey =>
+            rowCategoryKeys.includes(categoryKey)
+        );
+    });
+
+    const eligibleTotal = eligibleRows.reduce(
+        (sum, row) => sum + Number(row.rowTotal || 0),
+        0
+    );
+
+    if (eligibleTotal <= 0) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "У чеку немає товарів, які підпадають під персональну % знижку",
+            offerId: normalizedOfferId
+        };
+    }
+
+    const maxBase = Number.isFinite(Number(maxDiscountBase))
+        ? Number(maxDiscountBase)
+        : eligibleTotal;
+
+    const discountAmount = Math.min(
+        maxBase,
+        eligibleTotal,
+        Math.round(eligibleTotal * (percent / 100))
+    );
+
+    if (discountAmount <= 0) {
+        return {
+            discountAmount: 0,
+            note: "",
+            isValid: false,
+            message: "Персональна % знижка не дала суму знижки",
+            offerId: normalizedOfferId
+        };
+    }
+
+    const title = String(offer.title || "Персональна % знижка").trim();
+
+    return {
+        discountAmount,
+        note: `${title} ${percent}%: -${discountAmount} грн`,
+        isValid: true,
+        message: "Персональна % знижка застосована",
+        offerId: normalizedOfferId
+    };
+}
+
 /* ===================== STAFF: SALE PREVIEW ===================== */
 
 app.post("/api/staff/sale-preview", async (req, res) => {
@@ -5034,6 +5198,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
         const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
+        const personalPercentOfferId = Number(req.body.personalPercentOfferId || 0);
         const skipPublicPromo = Boolean(req.body.skipPublicPromo);
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
@@ -5470,9 +5635,36 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             Number(personalPromoCodeDiscount.discountAmount || 0)
         );
 
-        const totalAmount = Math.max(
+        const totalAfterPersonalPromoCode = Math.max(
             0,
             totalAfterStatusDiscount - personalPromoCodeDiscountAmount
+        );
+
+        const personalPercentOfferDiscount = await calculateStaffPersonalPercentOfferDiscount(
+            connection,
+            saleRows,
+            customerId,
+            personalPercentOfferId,
+            totalAfterPersonalPromoCode
+        );
+
+        if (personalPercentOfferId && !personalPercentOfferDiscount.isValid) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: personalPercentOfferDiscount.message || "Персональна % знижка не застосована"
+            });
+        }
+
+        const personalPercentOfferDiscountAmount = Math.min(
+            totalAfterPersonalPromoCode,
+            Number(personalPercentOfferDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterPersonalPromoCode - personalPercentOfferDiscountAmount
         );
 
         const focusPromoNote = focusProductDiscountAmount > 0
@@ -5619,6 +5811,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
             promoCode: personalPromoCode || "",
             personalGiftOfferId,
+            personalPercentOfferId,
             skipPublicPromo,
             allowOutOfStock,
             orderId
@@ -5678,6 +5871,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             statusDiscountNote,
             personalPromoCodeDiscountAmount,
             personalPromoCodeNote,
+            personalPercentOfferDiscountAmount,
+            personalPercentOfferNote,
             totalAmount,
             paymentAmount,
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
@@ -5714,6 +5909,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
         const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
+        const personalPercentOfferId = Number(req.body.personalPercentOfferId || 0);
         const skipPublicPromo = Boolean(req.body.skipPublicPromo);
 
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
@@ -6093,9 +6289,36 @@ app.post("/api/staff/create-sale", async (req, res) => {
             Number(personalPromoCodeDiscount.discountAmount || 0)
         );
 
-        const totalAmount = Math.max(
+        const totalAfterPersonalPromoCode = Math.max(
             0,
             totalAfterStatusDiscount - personalPromoCodeDiscountAmount
+        );
+
+        const personalPercentOfferDiscount = await calculateStaffPersonalPercentOfferDiscount(
+            connection,
+            saleRows,
+            customerId,
+            personalPercentOfferId,
+            totalAfterPersonalPromoCode
+        );
+
+        if (personalPercentOfferId && !personalPercentOfferDiscount.isValid) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: personalPercentOfferDiscount.message || "Персональна % знижка не застосована"
+            });
+        }
+
+        const personalPercentOfferDiscountAmount = Math.min(
+            totalAfterPersonalPromoCode,
+            Number(personalPercentOfferDiscount.discountAmount || 0)
+        );
+
+        const totalAmount = Math.max(
+            0,
+            totalAfterPersonalPromoCode - personalPercentOfferDiscountAmount
         );
 
         const focusPromoNote = focusProductDiscountAmount > 0
@@ -6112,6 +6335,14 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const personalPromoCodeNote = personalPromoCodeDiscountAmount > 0
             ? `, ${personalPromoCodeDiscount.note || `Промокод ${personalPromoCode}: -${personalPromoCodeDiscountAmount} грн`}`
+            : "";
+
+        const personalPercentOfferNote = personalPercentOfferDiscountAmount > 0
+            ? `, ${personalPercentOfferDiscount.note || `Персональна % знижка: -${personalPercentOfferDiscountAmount} грн`}`
+            : "";
+
+        const personalPercentOfferNote = personalPercentOfferDiscountAmount > 0
+            ? `, ${personalPercentOfferDiscount.note || `Персональна % знижка: -${personalPercentOfferDiscountAmount} грн`}`
             : "";
 
         const shouldMarkWelcomeDiscountUsed =
@@ -6959,7 +7190,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${statusDiscountNote}${personalPromoCodeNote}${personalGiftNote}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${statusDiscountNote}${personalPromoCodeNote}${personalPercentOfferNote}${personalGiftNote}${certificateNote}`
             ]
         );
 
@@ -7070,6 +7301,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 statusDiscountNote,
                 personalPromoCodeDiscountAmount,
                 personalPromoCodeNote,
+                personalPercentOfferDiscountAmount,
+                personalPercentOfferNote,
                 totalAmount,
                 paymentLabel,
                 customerName: customer ? customer.name : "Без клієнта",
