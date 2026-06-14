@@ -2059,6 +2059,7 @@ app.post("/api/staff/sale-preview", async (req, res) => {
         const customerId = Number(req.body.customerId || 0);
         const warehouseIdFromBody = Number(req.body.warehouseId || 0);
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
+        const selectedPublicPromoCodeId = Number(req.body.selectedPublicPromoCodeId || 0);
         const skipPublicPromo = Boolean(req.body.skipPublicPromo);
         const bodyItems = Array.isArray(req.body.items) ? req.body.items : [];
 
@@ -2119,6 +2120,10 @@ app.post("/api/staff/sale-preview", async (req, res) => {
                 grossTotalAmount: 0,
                 focusProductDiscountAmount: 0,
                 focusPromoNote: "",
+                availablePublicPromoCodes: [],
+                selectedPublicPromoCodeId: 0,
+                publicPromoCodeDiscountAmount: 0,
+                publicPromoCodeNote: "",
                 welcomeDiscountAmount: 0,
                 welcomeDiscountNote: "",
                 welcomeDiscountAvailable: false,
@@ -2189,26 +2194,57 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             0
         );
 
-        const focusPromoDiscount = skipPublicPromo
-            ? {
-                discountAmount: 0,
-                note: ""
-            }
-            : await calculateStaffFocusProductDiscount(
+        const availablePublicPromoCodes = skipPublicPromo
+            ? []
+            : await getStaffPublicPromoCodeOptions(
                 connection,
                 saleRows,
                 warehouseId,
                 customerId
             );
 
+        const selectedPublicPromoCodeOption = getSelectedStaffPublicPromoCodeOption(
+            availablePublicPromoCodes,
+            selectedPublicPromoCodeId
+        );
+
+        const selectedPublicPromoCodeAvailable =
+            selectedPublicPromoCodeOption &&
+            Boolean(selectedPublicPromoCodeOption.available);
+
+        const publicPromoCodeDiscountAmount = selectedPublicPromoCodeAvailable
+            ? Math.min(
+                grossTotalAmount,
+                Number(selectedPublicPromoCodeOption.discountAmount || 0)
+            )
+            : 0;
+
+        const totalAfterPublicPromoCode = Math.max(
+            0,
+            grossTotalAmount - publicPromoCodeDiscountAmount
+        );
+
+        const focusPromoDiscount =
+            skipPublicPromo || publicPromoCodeDiscountAmount > 0
+                ? {
+                    discountAmount: 0,
+                    note: ""
+                }
+                : await calculateStaffFocusProductDiscount(
+                    connection,
+                    saleRows,
+                    warehouseId,
+                    customerId
+                );
+
         const focusProductDiscountAmount = Math.min(
-            grossTotalAmount,
+            totalAfterPublicPromoCode,
             Number(focusPromoDiscount.discountAmount || 0)
         );
 
         const totalAfterFocusPromo = Math.max(
             0,
-            grossTotalAmount - focusProductDiscountAmount
+            totalAfterPublicPromoCode - focusProductDiscountAmount
         );
 
         const welcomeDiscount = await calculateStaffWelcomeDiscount(
@@ -2271,6 +2307,18 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             grossTotalAmount,
             focusProductDiscountAmount,
             focusPromoNote: focusPromoDiscount.note || "",
+            availablePublicPromoCodes,
+            selectedPublicPromoCodeId:
+                publicPromoCodeDiscountAmount > 0 && selectedPublicPromoCodeOption
+                    ? Number(selectedPublicPromoCodeOption.campaignId || 0)
+                    : 0,
+            publicPromoCodeDiscountAmount,
+            publicPromoCodeNote: publicPromoCodeDiscountAmount > 0
+                ? selectedPublicPromoCodeOption.note || ""
+                : "",
+            publicPromoCodeMessage: selectedPublicPromoCodeOption
+                ? selectedPublicPromoCodeOption.message || ""
+                : "",
             welcomeDiscountAmount,
             welcomeDiscountNote: welcomeDiscount.note || "",
             welcomeDiscountAvailable: Boolean(welcomeDiscount.isAvailable),
@@ -4854,6 +4902,108 @@ function getPublicPromoCodeTargetData(targetSelection) {
     return result;
 }
 
+function calculateStaffPublicPromoCodeOption(campaign, saleRows) {
+    const targetData = getPublicPromoCodeTargetData(campaign.target_selection);
+    const promoCode = targetData.promoCode;
+    const discountValue = Number(targetData.discountAmount || 0);
+    const minOrderAmount = Number(campaign.target_apply_limit || 0);
+
+    const eligibleTotal = saleRows
+        .filter(row =>
+            !row?.isCertificateProduct &&
+            !isStaffCertificateStock(row?.stock)
+        )
+        .reduce((sum, row) => sum + Number(row.rowTotal || 0), 0);
+
+    let available = true;
+    let message = "";
+
+    if (!promoCode) {
+        available = false;
+        message = "У промо не вказано код";
+    } else if (eligibleTotal <= 0) {
+        available = false;
+        message = "Промокод не діє на сертифікати";
+    } else if (minOrderAmount > 0 && eligibleTotal < minOrderAmount) {
+        available = false;
+        message = `Потрібна сума від ${minOrderAmount} грн без врахування сертифікатів`;
+    } else if (discountValue <= 0) {
+        available = false;
+        message = "У промо не вказано суму знижки";
+    }
+
+    const discountAmount = available
+        ? Math.min(eligibleTotal, discountValue)
+        : 0;
+
+    return {
+        campaignId: Number(campaign.id || 0),
+        id: Number(campaign.id || 0),
+        title: campaign.title || "Загальний промокод",
+        promoCode,
+        minOrderAmount,
+        discountValue,
+        eligibleTotal,
+        discountAmount,
+        available,
+        message,
+        note: available && discountAmount > 0
+            ? `${campaign.title || "Загальний промокод"} ${promoCode}: -${discountAmount} грн`
+            : ""
+    };
+}
+
+async function getStaffPublicPromoCodeOptions(connection, saleRows, warehouseId, customerId) {
+    const normalizedWarehouseId = Number(warehouseId || 0);
+
+    if (!normalizedWarehouseId) {
+        return [];
+    }
+
+    if (await isStaffVipCustomer(connection, customerId)) {
+        return [];
+    }
+
+    const [campaignRows] = await connection.query(
+        `
+        SELECT
+            pc.id,
+            pc.title,
+            pc.target_apply_limit,
+            pc.target_selection,
+            pc.priority
+        FROM promo_campaigns pc
+        INNER JOIN promo_campaign_warehouses pcw
+            ON pcw.promo_campaign_id = pc.id
+           AND pcw.warehouse_id = ?
+        WHERE pc.is_active = 1
+          AND pc.audience = 'public'
+          AND pc.promo_type = 'public_promo_code'
+          AND (pc.starts_at IS NULL OR pc.starts_at <= NOW())
+          AND (pc.ends_at IS NULL OR pc.ends_at >= NOW())
+        ORDER BY pc.priority ASC, pc.id DESC
+        LIMIT 20
+        `,
+        [normalizedWarehouseId]
+    );
+
+    return campaignRows
+        .map(campaign => calculateStaffPublicPromoCodeOption(campaign, saleRows))
+        .filter(option => option.campaignId > 0 && option.promoCode);
+}
+
+function getSelectedStaffPublicPromoCodeOption(options, selectedPublicPromoCodeId) {
+    const selectedId = Number(selectedPublicPromoCodeId || 0);
+
+    if (!selectedId) {
+        return null;
+    }
+
+    return (Array.isArray(options) ? options : []).find(option =>
+        Number(option.campaignId || 0) === selectedId
+    ) || null;
+}
+
 app.post("/api/staff/public-promo-code-promos-list", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
@@ -5909,6 +6059,7 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         const certificateCode = String(req.body.certificateCode || "").trim().toUpperCase();
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
+        const selectedPublicPromoCodeId = Number(req.body.selectedPublicPromoCodeId || 0);
         const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
         const personalPercentOfferId = Number(req.body.personalPercentOfferId || 0);
         const skipPublicPromo = Boolean(req.body.skipPublicPromo);
@@ -6275,26 +6426,70 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
 
         const grossTotalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
 
-        const focusPromoDiscount = skipPublicPromo
-            ? {
-                discountAmount: 0,
-                note: ""
-            }
-            : await calculateStaffFocusProductDiscount(
+        const availablePublicPromoCodes = skipPublicPromo
+            ? []
+            : await getStaffPublicPromoCodeOptions(
                 connection,
                 saleRows,
                 warehouseId,
                 customerId
             );
 
+        const selectedPublicPromoCodeOption = getSelectedStaffPublicPromoCodeOption(
+            availablePublicPromoCodes,
+            selectedPublicPromoCodeId
+        );
+
+        if (selectedPublicPromoCodeId && !selectedPublicPromoCodeOption) {
+            return res.status(400).json({
+                ok: false,
+                error: "Загальний промокод неактивний або недоступний для цього складу"
+            });
+        }
+
+        if (
+            selectedPublicPromoCodeOption &&
+            !selectedPublicPromoCodeOption.available
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error: selectedPublicPromoCodeOption.message || "Загальний промокод не застосовано"
+            });
+        }
+
+        const publicPromoCodeDiscountAmount = selectedPublicPromoCodeOption
+            ? Math.min(
+                grossTotalAmount,
+                Number(selectedPublicPromoCodeOption.discountAmount || 0)
+            )
+            : 0;
+
+        const totalAfterPublicPromoCode = Math.max(
+            0,
+            grossTotalAmount - publicPromoCodeDiscountAmount
+        );
+
+        const focusPromoDiscount =
+            skipPublicPromo || publicPromoCodeDiscountAmount > 0
+                ? {
+                    discountAmount: 0,
+                    note: ""
+                }
+                : await calculateStaffFocusProductDiscount(
+                    connection,
+                    saleRows,
+                    warehouseId,
+                    customerId
+                );
+
         const focusProductDiscountAmount = Math.min(
-            grossTotalAmount,
+            totalAfterPublicPromoCode,
             Number(focusPromoDiscount.discountAmount || 0)
         );
 
         const totalAfterFocusPromo = Math.max(
             0,
-            grossTotalAmount - focusProductDiscountAmount
+            totalAfterPublicPromoCode - focusProductDiscountAmount
         );
 
         const welcomeDiscount = await calculateStaffWelcomeDiscount(
@@ -6383,6 +6578,10 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
 
         const focusPromoNote = focusProductDiscountAmount > 0
             ? focusPromoDiscount.note || `Аромат дня: -${focusProductDiscountAmount} грн`
+            : "";
+
+        const publicPromoCodeNote = publicPromoCodeDiscountAmount > 0
+            ? selectedPublicPromoCodeOption.note || `Загальний промокод: -${publicPromoCodeDiscountAmount} грн`
             : "";
 
         const welcomeDiscountNote = welcomeDiscountAmount > 0
@@ -6528,6 +6727,9 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             warehouseId,
             certificateCode: paymentType === "certificate_mono_qr" ? certificateCode : null,
             promoCode: personalPromoCode || "",
+            selectedPublicPromoCodeId: publicPromoCodeDiscountAmount > 0 && selectedPublicPromoCodeOption
+                ? Number(selectedPublicPromoCodeOption.campaignId || 0)
+                : 0,
             personalGiftOfferId,
             personalPercentOfferId,
             skipPublicPromo,
@@ -6583,6 +6785,8 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             grossTotalAmount,
             focusProductDiscountAmount,
             focusPromoNote,
+            publicPromoCodeDiscountAmount,
+            publicPromoCodeNote,
             welcomeDiscountAmount,
             welcomeDiscountNote,
             statusDiscountAmount,
@@ -6626,6 +6830,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const externalOrderId = String(req.body.orderId || "").trim();
         const customerSource = String(req.body.customerSource || "").trim() || null;
         const personalPromoCode = String(req.body.promoCode || "").trim().toUpperCase();
+        const selectedPublicPromoCodeId = Number(req.body.selectedPublicPromoCodeId || 0);
         const personalGiftOfferId = Number(req.body.personalGiftOfferId || 0);
         const personalPercentOfferId = Number(req.body.personalPercentOfferId || 0);
         const skipPublicPromo = Boolean(req.body.skipPublicPromo);
@@ -6929,26 +7134,74 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const grossTotalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
         const totalQuantity = saleRows.reduce((sum, row) => sum + row.quantity, 0);
 
-        const focusPromoDiscount = skipPublicPromo
-            ? {
-                discountAmount: 0,
-                note: ""
-            }
-            : await calculateStaffFocusProductDiscount(
+        const availablePublicPromoCodes = skipPublicPromo
+            ? []
+            : await getStaffPublicPromoCodeOptions(
                 connection,
                 saleRows,
                 warehouseId,
                 customerId
             );
 
+        const selectedPublicPromoCodeOption = getSelectedStaffPublicPromoCodeOption(
+            availablePublicPromoCodes,
+            selectedPublicPromoCodeId
+        );
+
+        if (selectedPublicPromoCodeId && !selectedPublicPromoCodeOption) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Загальний промокод неактивний або недоступний для цього складу"
+            });
+        }
+
+        if (
+            selectedPublicPromoCodeOption &&
+            !selectedPublicPromoCodeOption.available
+        ) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: selectedPublicPromoCodeOption.message || "Загальний промокод не застосовано"
+            });
+        }
+
+        const publicPromoCodeDiscountAmount = selectedPublicPromoCodeOption
+            ? Math.min(
+                grossTotalAmount,
+                Number(selectedPublicPromoCodeOption.discountAmount || 0)
+            )
+            : 0;
+
+        const totalAfterPublicPromoCode = Math.max(
+            0,
+            grossTotalAmount - publicPromoCodeDiscountAmount
+        );
+
+        const focusPromoDiscount =
+            skipPublicPromo || publicPromoCodeDiscountAmount > 0
+                ? {
+                    discountAmount: 0,
+                    note: ""
+                }
+                : await calculateStaffFocusProductDiscount(
+                    connection,
+                    saleRows,
+                    warehouseId,
+                    customerId
+                );
+
         const focusProductDiscountAmount = Math.min(
-            grossTotalAmount,
+            totalAfterPublicPromoCode,
             Number(focusPromoDiscount.discountAmount || 0)
         );
 
         const totalAfterFocusPromo = Math.max(
             0,
-            grossTotalAmount - focusProductDiscountAmount
+            totalAfterPublicPromoCode - focusProductDiscountAmount
         );
 
         const welcomeDiscount = await calculateStaffWelcomeDiscount(
@@ -7042,6 +7295,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const focusPromoNote = focusProductDiscountAmount > 0
             ? `, ${focusPromoDiscount.note || `Аромат дня: -${focusProductDiscountAmount} грн`}`
             : "";
+
+        const publicPromoCodeNote = publicPromoCodeDiscountAmount > 0
+            ? `, ${selectedPublicPromoCodeOption.note || `Загальний промокод: -${publicPromoCodeDiscountAmount} грн`}`
+            : "";        
 
         const welcomeDiscountNote = welcomeDiscountAmount > 0
             ? `, ${welcomeDiscount.note || `Welcome-знижка 10%: -${welcomeDiscountAmount} грн`}`
@@ -7904,7 +8161,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${welcomeDiscountNote}${statusDiscountNote}${personalPromoCodeNote}${personalPercentOfferNote}${personalGiftNote}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${publicPromoCodeNote}${welcomeDiscountNote}${statusDiscountNote}${personalPromoCodeNote}${personalPercentOfferNote}${personalGiftNote}${certificateNote}`
             ]
         );
 
@@ -8009,6 +8266,8 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 grossTotalAmount,
                 focusProductDiscountAmount,
                 focusPromoNote,
+                publicPromoCodeDiscountAmount,
+                publicPromoCodeNote,
                 welcomeDiscountAmount,
                 welcomeDiscountNote,
                 statusDiscountAmount,
