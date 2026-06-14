@@ -4816,6 +4816,434 @@ app.post("/api/staff/focus-promo-save", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: PUBLIC PROMO CODE PROMOS ===================== */
+
+function normalizePublicPromoCode(value) {
+    return String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, "");
+}
+
+function buildPublicPromoCodeTargetSelection(promoCode, discountAmount) {
+    return `code:${normalizePublicPromoCode(promoCode)};amount:${Number(discountAmount || 0)}`;
+}
+
+function getPublicPromoCodeTargetData(targetSelection) {
+    const rawValue = String(targetSelection || "").trim();
+
+    const result = {
+        promoCode: "",
+        discountAmount: 0
+    };
+
+    rawValue.split(";").forEach(part => {
+        const [rawKey, ...rawRest] = String(part || "").split(":");
+        const key = String(rawKey || "").trim().toLowerCase();
+        const value = rawRest.join(":").trim();
+
+        if (key === "code") {
+            result.promoCode = normalizePublicPromoCode(value);
+        }
+
+        if (key === "amount") {
+            result.discountAmount = Number(value || 0);
+        }
+    });
+
+    return result;
+}
+
+app.post("/api/staff/public-promo-code-promos-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        await deactivateExpiredPromos(db);
+
+        const [campaigns] = await db.query(
+            `
+            SELECT
+                c.id,
+                c.title,
+                c.promo_type,
+                c.discount_percent,
+                c.focus_product_id,
+                DATE_FORMAT(c.starts_at, '%Y-%m-%d %H:%i:%s') AS starts_at,
+                DATE_FORMAT(c.ends_at, '%Y-%m-%d %H:%i:%s') AS ends_at,
+                c.is_active,
+                c.audience,
+                c.exclude_certificates,
+                c.exclude_from_personal_discount,
+                c.combinable,
+                c.target_apply_limit,
+                c.target_selection,
+                c.priority,
+                c.created_at
+            FROM promo_campaigns c
+            WHERE c.promo_type = 'public_promo_code'
+              AND c.audience = 'public'
+            ORDER BY c.starts_at DESC, c.id DESC
+            `
+        );
+
+        const campaignIds = campaigns
+            .map(campaign => Number(campaign.id || 0))
+            .filter(id => Number.isInteger(id) && id > 0);
+
+        let campaignWarehouses = [];
+
+        if (campaignIds.length) {
+            const placeholders = campaignIds.map(() => "?").join(",");
+
+            const [warehouseRows] = await db.query(
+                `
+                SELECT
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id,
+                    COALESCE(
+                        MAX(sb.warehouse_name),
+                        CONCAT('Склад ID ', pcw.warehouse_id)
+                    ) AS warehouse_name
+                FROM promo_campaign_warehouses pcw
+                LEFT JOIN stock_balances sb
+                    ON sb.warehouse_id = pcw.warehouse_id
+                WHERE pcw.promo_campaign_id IN (${placeholders})
+                GROUP BY
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id
+                ORDER BY
+                    pcw.promo_campaign_id ASC,
+                    pcw.warehouse_id ASC
+                `,
+                campaignIds
+            );
+
+            campaignWarehouses = warehouseRows;
+        }
+
+        const warehousesByCampaign = new Map();
+
+        campaignWarehouses.forEach(row => {
+            const promoId = Number(row.promo_campaign_id || 0);
+
+            if (!warehousesByCampaign.has(promoId)) {
+                warehousesByCampaign.set(promoId, []);
+            }
+
+            warehousesByCampaign.get(promoId).push({
+                warehouse_id: Number(row.warehouse_id || 0),
+                warehouse_name: row.warehouse_name || `Склад ID ${row.warehouse_id}`
+            });
+        });
+
+        return res.json({
+            ok: true,
+            campaigns: campaigns.map(campaign => {
+                const targetData = getPublicPromoCodeTargetData(campaign.target_selection);
+                const campaignWarehousesList =
+                    warehousesByCampaign.get(Number(campaign.id || 0)) || [];
+
+                return {
+                    id: campaign.id,
+                    title: campaign.title,
+                    promo_type: campaign.promo_type,
+                    promo_code: targetData.promoCode,
+                    discount_amount: Number(targetData.discountAmount || 0),
+                    min_order_amount: Number(campaign.target_apply_limit || 0),
+                    starts_at: campaign.starts_at,
+                    ends_at: campaign.ends_at,
+                    is_active: Number(campaign.is_active) === 1,
+                    audience: campaign.audience,
+                    exclude_certificates: Number(campaign.exclude_certificates) === 1,
+                    exclude_from_personal_discount: Number(campaign.exclude_from_personal_discount) === 1,
+                    combinable: Number(campaign.combinable) === 1,
+                    target_apply_limit: campaign.target_apply_limit,
+                    target_selection: campaign.target_selection,
+                    priority: campaign.priority,
+                    created_at: campaign.created_at,
+                    warehouse_ids: campaignWarehousesList.map(warehouse => warehouse.warehouse_id),
+                    warehouses: campaignWarehousesList
+                };
+            })
+        });
+
+    } catch (err) {
+        console.error("STAFF PUBLIC PROMO CODE PROMOS LIST ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/public-promo-code-promo-save", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const promoId = Number(req.body.promoId || 0);
+
+        const title = String(req.body.title || "").trim();
+        const promoCode = normalizePublicPromoCode(req.body.promoCode);
+        const discountAmount = Number(req.body.discountAmount || 0);
+        const minOrderAmount = Number(req.body.minOrderAmount || 0);
+        const startsAt = String(req.body.startsAt || "").trim() || null;
+        const endsAt = String(req.body.endsAt || "").trim() || null;
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        const warehouseIds = normalizePublicPercentPromoProductIds(
+            req.body.warehouseIds
+        );
+
+        if (!staffId) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            connection.release();
+
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!title) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву загального промокоду"
+            });
+        }
+
+        if (!promoCode) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть промокод"
+            });
+        }
+
+        if (!discountAmount || discountAmount <= 0) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть суму знижки більше 0 грн"
+            });
+        }
+
+        if (minOrderAmount < 0) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Мінімальна сума чека не може бути меншою 0"
+            });
+        }
+
+        if (!startsAt || !endsAt) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть дату початку і дату завершення"
+            });
+        }
+
+        if (!warehouseIds.length) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть хоча б один staff-склад"
+            });
+        }
+
+        if (promoId) {
+            const [existingRows] = await connection.query(
+                `
+                SELECT id
+                FROM promo_campaigns
+                WHERE id = ?
+                  AND promo_type = 'public_promo_code'
+                LIMIT 1
+                `,
+                [promoId]
+            );
+
+            if (!existingRows.length) {
+                connection.release();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Загальний промокод не знайдено"
+                });
+            }
+        }
+
+        const targetSelection = buildPublicPromoCodeTargetSelection(
+            promoCode,
+            discountAmount
+        );
+
+        const priority = 15;
+
+        await connection.beginTransaction();
+
+        let savedPromoId = promoId;
+
+        if (promoId) {
+            await connection.query(
+                `
+                UPDATE promo_campaigns
+                SET
+                    title = ?,
+                    discount_percent = 0,
+                    focus_product_id = NULL,
+                    starts_at = ?,
+                    ends_at = ?,
+                    is_active = ?,
+                    audience = 'public',
+                    exclude_certificates = 1,
+                    exclude_from_personal_discount = 1,
+                    combinable = 0,
+                    target_apply_limit = ?,
+                    target_selection = ?,
+                    priority = ?
+                WHERE id = ?
+                  AND promo_type = 'public_promo_code'
+                `,
+                [
+                    title,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    minOrderAmount,
+                    targetSelection,
+                    priority,
+                    promoId
+                ]
+            );
+        } else {
+            const [result] = await connection.query(
+                `
+                INSERT INTO promo_campaigns
+                (
+                    title,
+                    promo_type,
+                    discount_percent,
+                    focus_product_id,
+                    starts_at,
+                    ends_at,
+                    is_active,
+                    created_at,
+                    audience,
+                    exclude_certificates,
+                    exclude_from_personal_discount,
+                    combinable,
+                    target_apply_limit,
+                    target_selection,
+                    priority
+                )
+                VALUES (?, 'public_promo_code', 0, NULL, ?, ?, ?, NOW(), 'public', 1, 1, 0, ?, ?, ?)
+                `,
+                [
+                    title,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    minOrderAmount,
+                    targetSelection,
+                    priority
+                ]
+            );
+
+            savedPromoId = result.insertId;
+        }
+
+        await connection.query(
+            `
+            DELETE FROM promo_campaign_warehouses
+            WHERE promo_campaign_id = ?
+            `,
+            [savedPromoId]
+        );
+
+        await connection.query(
+            `
+            INSERT INTO promo_campaign_warehouses
+            (
+                promo_campaign_id,
+                warehouse_id
+            )
+            VALUES ?
+            `,
+            [
+                warehouseIds.map(warehouseId => [
+                    savedPromoId,
+                    warehouseId
+                ])
+            ]
+        );
+
+        await connection.commit();
+
+        clearPublicPromoCampaignsCache();
+        connection.release();
+
+        return res.json({
+            ok: true,
+            promoId: savedPromoId,
+            promoCode,
+            discountAmount,
+            minOrderAmount
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error("STAFF PUBLIC PROMO CODE ROLLBACK ERROR:", rollbackErr);
+        }
+
+        connection.release();
+
+        console.error("STAFF PUBLIC PROMO CODE SAVE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: PUBLIC PERCENT PROMOS LIST ===================== */
 
 app.post("/api/staff/public-percent-promos-list", async (req, res) => {
