@@ -8519,6 +8519,154 @@ app.post("/api/staff/create-warehouse", async (req, res) => {
         connection.release();
     }
 });
+
+/* ===================== STAFF: UPDATE WAREHOUSE ===================== */
+
+app.post("/api/staff/update-warehouse", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const warehouseId = Number(req.body.warehouseId || 0);
+        const warehouseName = String(req.body.warehouseName || "").trim();
+        const supplierDetails = String(req.body.supplierDetails || "").trim() || null;
+        const buyerDetails = String(req.body.buyerDetails || "").trim() || null;
+        const documentBasis = String(req.body.documentBasis || "").trim() || null;
+        const actCity = String(req.body.actCity || "").trim() || null;
+
+        if (!staffId || !warehouseId || !warehouseName) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing fields"
+            });
+        }
+
+        if (!supplierDetails || !buyerDetails || !documentBasis || !actCity) {
+            return res.status(400).json({
+                ok: false,
+                error: "Заповніть всі реквізити складу для актів"
+            });
+        }
+
+        const [staffRows] = await connection.query(
+            "SELECT id, role, is_active FROM staff_users WHERE id = ? AND is_active = 1 LIMIT 1",
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const staff = staffRows[0];
+
+        if (staff.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                error: "admin only"
+            });
+        }
+
+        const [warehouseRows] = await connection.query(
+            `
+            SELECT warehouse_id
+            FROM stock_balances
+            WHERE warehouse_id = ?
+            LIMIT 1
+            `,
+            [warehouseId]
+        );
+
+        if (!warehouseRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Склад не знайдено"
+            });
+        }
+
+        const [sameNameRows] = await connection.query(
+            `
+            SELECT warehouse_id
+            FROM stock_balances
+            WHERE LOWER(TRIM(warehouse_name)) = LOWER(TRIM(?))
+              AND warehouse_id <> ?
+            LIMIT 1
+            `,
+            [warehouseName, warehouseId]
+        );
+
+        if (sameNameRows.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Склад з такою назвою вже існує"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        await connection.query(
+            `
+            UPDATE stock_balances
+            SET
+                warehouse_name = ?,
+                supplier_details = ?,
+                buyer_details = ?,
+                document_basis = ?,
+                act_city = ?
+            WHERE warehouse_id = ?
+            `,
+            [
+                warehouseName,
+                supplierDetails,
+                buyerDetails,
+                documentBasis,
+                actCity,
+                warehouseId
+            ]
+        );
+
+        await connection.query(
+            `
+            UPDATE stock_movements
+            SET warehouse_name = ?
+            WHERE warehouse_id = ?
+            `,
+            [
+                warehouseName,
+                warehouseId
+            ]
+        );
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            warehouse: {
+                warehouse_id: warehouseId,
+                warehouse_name: warehouseName,
+                supplier_details: supplierDetails,
+                buyer_details: buyerDetails,
+                document_basis: documentBasis,
+                act_city: actCity
+            }
+        });
+
+    } catch (err) {
+        await connection.rollback();
+
+        console.error("STAFF UPDATE WAREHOUSE ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== STAFF: STOCK MANAGE ITEMS ===================== */
 
 app.post("/api/staff/stock-manage-items", async (req, res) => {
