@@ -1016,6 +1016,7 @@ app.get("/api/products-catalog-public", async (req, res) => {
                 price
             FROM products_catalog
             WHERE is_active = 1
+              AND COALESCE(staff_only, 0) = 0
             ORDER BY category_slug ASC, display_name ASC
             `
         );
@@ -1116,6 +1117,7 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
                   AND c.audience = 'public'
                   AND (c.starts_at IS NULL OR c.starts_at <= NOW())
                   AND (c.ends_at IS NULL OR c.ends_at >= NOW())
+                  AND (p.id IS NULL OR COALESCE(p.staff_only, 0) = 0)
                 ORDER BY c.priority ASC, c.id DESC
                 LIMIT 10
             `,
@@ -3836,6 +3838,95 @@ async function getStaffUsersManagerOrDeny(staffId) {
     return adminCheck;
 }
 
+/* ===================== STAFF: PRODUCTS ADMIN HELPERS ===================== */
+
+async function getStaffAdminToolsManagerOrDeny(staffId) {
+    return getStaffUsersManagerOrDeny(staffId);
+}
+
+function normalizeStaffProductName(value) {
+    return String(value || "")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+function normalizeStaffProductCapacityMl(value) {
+    const capacity = Number(value || 0);
+
+    if (!Number.isInteger(capacity) || capacity <= 0) {
+        return 0;
+    }
+
+    return capacity;
+}
+
+function normalizeStaffProductPrice(value) {
+    const price = Number(value || 0);
+
+    if (!Number.isFinite(price) || price < 0) {
+        return 0;
+    }
+
+    return Math.round(price);
+}
+
+function slugifyStaffProductPart(value) {
+    const dictionary = {
+        "а": "a", "б": "b", "в": "v", "г": "h", "ґ": "g", "д": "d",
+        "е": "e", "є": "ye", "ж": "zh", "з": "z", "и": "y", "і": "i",
+        "ї": "yi", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n",
+        "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh",
+        "щ": "shch", "ь": "", "ю": "yu", "я": "ya"
+    };
+
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[’ʼ']/g, "")
+        .split("")
+        .map(char => dictionary[char] !== undefined ? dictionary[char] : char)
+        .join("")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+}
+
+function buildStaffProductKey({ categorySlug, productName, capacityMl }) {
+    const category = slugifyStaffProductPart(categorySlug);
+    const name = slugifyStaffProductPart(productName);
+    const capacity = normalizeStaffProductCapacityMl(capacityMl);
+
+    return [
+        category,
+        name,
+        capacity ? `${capacity}ml` : ""
+    ]
+        .filter(Boolean)
+        .join("_");
+}
+
+function buildStaffProductDisplayName({ productLabel, productName, capacityMl }) {
+    const label = normalizeStaffProductName(productLabel);
+    const name = normalizeStaffProductName(productName);
+    const capacity = normalizeStaffProductCapacityMl(capacityMl);
+
+    return [
+        label,
+        name,
+        capacity ? `${capacity} ml` : ""
+    ]
+        .filter(Boolean)
+        .join(" - ")
+        .replace(/\s+-\s+(\d+\s+ml)$/i, " $1");
+}
+
+function isStaffCatalogProductStockManaged(product) {
+    return (
+        !isStaffCertificateStock(product) &&
+        !isStaffDiscoveryProduct(product)
+    );
+}
+
 function normalizeStaffUserRole(roleRaw) {
     const role = String(roleRaw || "").trim().toLowerCase();
 
@@ -5871,13 +5962,16 @@ app.post("/api/staff/products", async (req, res) => {
             SELECT
                 id,
                 product_key,
+                product_name,
                 display_name,
                 product_label,
+                capacity_ml,
                 price,
                 cost_price,
                 realization_price,
                 category_slug,
-                is_active
+                is_active,
+                staff_only
             FROM products_catalog
             WHERE is_active = 1
             ORDER BY category_slug ASC, display_name ASC
@@ -5895,6 +5989,538 @@ app.post("/api/staff/products", async (req, res) => {
             ok: false,
             error: "server error"
         });
+    }
+});
+
+/* ===================== STAFF: PRODUCTS ADMIN ===================== */
+
+app.post("/api/staff/admin-product-categories", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const [products] = await db.query(
+            `
+            SELECT
+                id,
+                product_key,
+                product_name,
+                display_name,
+                product_label,
+                category_slug,
+                capacity_ml,
+                price,
+                cost_price,
+                realization_price,
+                is_active,
+                staff_only
+            FROM products_catalog
+            WHERE category_slug IS NOT NULL
+              AND TRIM(category_slug) <> ''
+            ORDER BY category_slug ASC, id ASC
+            `
+        );
+
+        const categoriesMap = new Map();
+
+        for (const product of products) {
+            const categorySlug = String(product.category_slug || "").trim();
+            if (!categorySlug) continue;
+
+            if (!categoriesMap.has(categorySlug)) {
+                categoriesMap.set(categorySlug, {
+                    category_slug: categorySlug,
+                    product_label: product.product_label || "",
+                    sample: product
+                });
+            }
+        }
+
+        return res.json({
+            ok: true,
+            categories: Array.from(categoriesMap.values())
+        });
+
+    } catch (err) {
+        console.error("STAFF ADMIN PRODUCT CATEGORIES ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/admin-products-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const categorySlug = String(req.body.categorySlug || "").trim();
+        const status = String(req.body.status || "active").trim().toLowerCase();
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const where = [];
+        const values = [];
+
+        if (categorySlug && categorySlug !== "all") {
+            where.push("category_slug = ?");
+            values.push(categorySlug);
+        }
+
+        if (status === "active") {
+            where.push("is_active = 1");
+        } else if (status === "inactive") {
+            where.push("is_active = 0");
+        }
+
+        const whereSql = where.length
+            ? "WHERE " + where.join(" AND ")
+            : "";
+
+        const [products] = await db.query(
+            `
+            SELECT
+                id,
+                product_key,
+                product_name,
+                display_name,
+                product_label,
+                category_slug,
+                capacity_ml,
+                price,
+                cost_price,
+                realization_price,
+                is_active,
+                staff_only
+            FROM products_catalog
+            ${whereSql}
+            ORDER BY category_slug ASC, display_name ASC
+            `,
+            values
+        );
+
+        return res.json({
+            ok: true,
+            products
+        });
+
+    } catch (err) {
+        console.error("STAFF ADMIN PRODUCTS LIST ERROR:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/admin-create-product", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const categorySlug = String(req.body.categorySlug || "").trim();
+        const productName = normalizeStaffProductName(req.body.productName);
+        const capacityMl = normalizeStaffProductCapacityMl(req.body.capacityMl);
+        const price = normalizeStaffProductPrice(req.body.price);
+        const costPrice = normalizeStaffProductPrice(req.body.costPrice);
+        const realizationPrice = normalizeStaffProductPrice(req.body.realizationPrice);
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        if (!categorySlug) {
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть категорію"
+            });
+        }
+
+        if (!productName) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву товару"
+            });
+        }
+
+        if (!capacityMl) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть ємність цифрою"
+            });
+        }
+
+        const [categoryRows] = await connection.query(
+            `
+            SELECT
+                category_slug,
+                product_label
+            FROM products_catalog
+            WHERE category_slug = ?
+            ORDER BY id ASC
+            LIMIT 1
+            `,
+            [categorySlug]
+        );
+
+        if (!categoryRows.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Категорію не знайдено в products_catalog"
+            });
+        }
+
+        const productLabel = String(categoryRows[0].product_label || "").trim();
+
+        const productKey = buildStaffProductKey({
+            categorySlug,
+            productName,
+            capacityMl
+        });
+
+        const displayName = buildStaffProductDisplayName({
+            productLabel,
+            productName,
+            capacityMl
+        });
+
+        if (!productKey) {
+            return res.status(400).json({
+                ok: false,
+                error: "Не вдалося сформувати product_key"
+            });
+        }
+
+        const [existingRows] = await connection.query(
+            `
+            SELECT id
+            FROM products_catalog
+            WHERE product_key = ?
+            LIMIT 1
+            `,
+            [productKey]
+        );
+
+        if (existingRows.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Товар з таким product_key вже існує"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        const [insertResult] = await connection.query(
+            `
+            INSERT INTO products_catalog
+            (
+                product_key,
+                product_name,
+                display_name,
+                product_label,
+                category_slug,
+                capacity_ml,
+                price,
+                cost_price,
+                realization_price,
+                is_active,
+                staff_only
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            `,
+            [
+                productKey,
+                productName,
+                displayName,
+                productLabel,
+                categorySlug,
+                capacityMl,
+                price,
+                costPrice,
+                realizationPrice,
+                isActive
+            ]
+        );
+
+        const productId = Number(insertResult.insertId || 0);
+
+        const stockManaged = isStaffCatalogProductStockManaged({
+            product_key: productKey,
+            display_name: displayName,
+            product_label: productLabel,
+            category_slug: categorySlug
+        });
+
+        if (productId && stockManaged) {
+            await connection.query(
+                `
+                INSERT INTO stock_balances
+                (
+                    warehouse_id,
+                    warehouse_name,
+                    supplier_details,
+                    buyer_details,
+                    document_basis,
+                    act_city,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    retail_price,
+                    cost_price,
+                    realization_price,
+                    initial_quantity,
+                    sales_quantity
+                )
+                SELECT
+                    w.warehouse_id,
+                    w.warehouse_name,
+                    w.supplier_details,
+                    w.buyer_details,
+                    w.document_basis,
+                    w.act_city,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    0,
+                    0
+                FROM (
+                    SELECT
+                        warehouse_id,
+                        MAX(warehouse_name) AS warehouse_name,
+                        MAX(supplier_details) AS supplier_details,
+                        MAX(buyer_details) AS buyer_details,
+                        MAX(document_basis) AS document_basis,
+                        MAX(act_city) AS act_city
+                    FROM stock_balances
+                    WHERE warehouse_id IS NOT NULL
+                    GROUP BY warehouse_id
+                ) w
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM stock_balances sb
+                    WHERE sb.warehouse_id = w.warehouse_id
+                      AND sb.product_id = ?
+                )
+                `,
+                [
+                    productId,
+                    productKey,
+                    displayName,
+                    price,
+                    costPrice,
+                    realizationPrice,
+                    productId
+                ]
+            );
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            product: {
+                id: productId,
+                product_key: productKey,
+                product_name: productName,
+                display_name: displayName,
+                product_label: productLabel,
+                category_slug: categorySlug,
+                capacity_ml: capacityMl,
+                price,
+                cost_price: costPrice,
+                realization_price: realizationPrice,
+                is_active: Boolean(isActive),
+                staff_only: true
+            }
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error("STAFF ADMIN CREATE PRODUCT ROLLBACK ERROR:", rollbackErr);
+        }
+
+        console.error("STAFF ADMIN CREATE PRODUCT ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
+app.post("/api/staff/admin-update-product", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const productId = Number(req.body.productId || 0);
+        const productName = normalizeStaffProductName(req.body.productName);
+        const price = normalizeStaffProductPrice(req.body.price);
+        const costPrice = normalizeStaffProductPrice(req.body.costPrice);
+        const realizationPrice = normalizeStaffProductPrice(req.body.realizationPrice);
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        if (!productId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Не передано ID товару"
+            });
+        }
+
+        if (!productName) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву товару"
+            });
+        }
+
+        const [productRows] = await connection.query(
+            `
+            SELECT
+                id,
+                product_key,
+                product_name,
+                display_name,
+                product_label,
+                category_slug,
+                capacity_ml
+            FROM products_catalog
+            WHERE id = ?
+            LIMIT 1
+            `,
+            [productId]
+        );
+
+        if (!productRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Товар не знайдено"
+            });
+        }
+
+        const currentProduct = productRows[0];
+
+        const displayName = buildStaffProductDisplayName({
+            productLabel: currentProduct.product_label,
+            productName,
+            capacityMl: currentProduct.capacity_ml
+        });
+
+        await connection.beginTransaction();
+
+        await connection.query(
+            `
+            UPDATE products_catalog
+            SET
+                product_name = ?,
+                display_name = ?,
+                price = ?,
+                cost_price = ?,
+                realization_price = ?,
+                is_active = ?
+            WHERE id = ?
+            `,
+            [
+                productName,
+                displayName,
+                price,
+                costPrice,
+                realizationPrice,
+                isActive,
+                productId
+            ]
+        );
+
+        await connection.query(
+            `
+            UPDATE stock_balances
+            SET
+                product_display_name = ?,
+                retail_price = ?,
+                cost_price = ?,
+                realization_price = ?
+            WHERE product_id = ?
+            `,
+            [
+                displayName,
+                price,
+                costPrice,
+                realizationPrice,
+                productId
+            ]
+        );
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            product: {
+                id: productId,
+                product_key: currentProduct.product_key,
+                product_name: productName,
+                display_name: displayName,
+                product_label: currentProduct.product_label,
+                category_slug: currentProduct.category_slug,
+                capacity_ml: currentProduct.capacity_ml,
+                price,
+                cost_price: costPrice,
+                realization_price: realizationPrice,
+                is_active: Boolean(isActive)
+            }
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error("STAFF ADMIN UPDATE PRODUCT ROLLBACK ERROR:", rollbackErr);
+        }
+
+        console.error("STAFF ADMIN UPDATE PRODUCT ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
     }
 });
 
