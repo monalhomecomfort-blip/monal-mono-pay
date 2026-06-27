@@ -5974,6 +5974,11 @@ app.post("/api/staff/products", async (req, res) => {
                 staff_only
             FROM products_catalog
             WHERE is_active = 1
+              AND LOWER(COALESCE(category_slug, '')) <> 'consumables'
+              AND LOWER(COALESCE(product_key, '')) NOT LIKE 'consumable_%'
+              AND LOWER(COALESCE(product_label, '')) NOT LIKE '%розхідник%'
+              AND LOWER(COALESCE(product_name, '')) NOT LIKE '%розхідник%'
+              AND LOWER(COALESCE(display_name, '')) NOT LIKE '%розхідник%'
             ORDER BY category_slug ASC, display_name ASC
             `
         );
