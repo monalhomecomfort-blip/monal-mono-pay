@@ -1351,6 +1351,187 @@ function calculateStaffPublicCampaignDiscount(campaign, saleRows) {
     };
 }
 
+async function calculateStaffPublicGiftPromo(
+    connection,
+    saleRows,
+    warehouseId,
+    customerId = 0,
+    options = {}
+) {
+    const normalizedWarehouseId = Number(warehouseId || 0);
+    const allowOutOfStock = Boolean(options.allowOutOfStock);
+    const lockStock = Boolean(options.lockStock);
+
+    if (await isStaffVipCustomer(connection, customerId)) {
+        return {
+            isValid: true,
+            campaign: null,
+            giftStock: null,
+            note: ""
+        };
+    }
+
+    if (!normalizedWarehouseId) {
+        return {
+            isValid: true,
+            campaign: null,
+            giftStock: null,
+            note: ""
+        };
+    }
+
+    const [campaignRows] = await connection.query(
+        `
+        SELECT
+            pc.id,
+            pc.title,
+            pc.promo_type,
+            pc.focus_product_id,
+            pc.target_selection,
+            pc.priority
+        FROM promo_campaigns pc
+        INNER JOIN promo_campaign_warehouses pcw
+            ON pcw.promo_campaign_id = pc.id
+           AND pcw.warehouse_id = ?
+        WHERE pc.is_active = 1
+          AND pc.audience = 'public'
+          AND pc.promo_type = 'public_gift'
+          AND (pc.starts_at IS NULL OR pc.starts_at <= NOW())
+          AND (pc.ends_at IS NULL OR pc.ends_at >= NOW())
+        ORDER BY pc.priority ASC, pc.id DESC
+        LIMIT 20
+        `,
+        [normalizedWarehouseId]
+    );
+
+    if (!campaignRows.length) {
+        return {
+            isValid: true,
+            campaign: null,
+            giftStock: null,
+            note: ""
+        };
+    }
+
+    const matchedCampaign = campaignRows.find(campaign =>
+        saleRows.some(row =>
+            isStaffPublicPercentPromoRowMatched(row, campaign)
+        )
+    );
+
+    if (!matchedCampaign) {
+        return {
+            isValid: true,
+            campaign: null,
+            giftStock: null,
+            note: ""
+        };
+    }
+
+    const giftProductId = Number(matchedCampaign.focus_product_id || 0);
+
+    if (!giftProductId) {
+        return {
+            isValid: false,
+            error: "У загальному подарунку не вказано товар-подарунок"
+        };
+    }
+
+    const lockSql = lockStock ? "FOR UPDATE" : "";
+
+    const [giftStockRows] = await connection.query(
+        `
+        SELECT
+            sb.id,
+            sb.warehouse_id,
+            sb.warehouse_name,
+            sb.product_id,
+            sb.product_key,
+            sb.product_display_name,
+            sb.retail_price,
+            sb.cost_price,
+            sb.realization_price,
+            sb.initial_quantity,
+            sb.sales_quantity,
+            sb.final_quantity,
+            p.product_key AS catalog_product_key,
+            p.display_name AS catalog_display_name,
+            p.product_label,
+            p.category_slug
+        FROM stock_balances sb
+        LEFT JOIN products_catalog p
+            ON p.id = sb.product_id
+        WHERE sb.warehouse_id = ?
+          AND sb.product_id = ?
+        LIMIT 1
+        ${lockSql}
+        `,
+        [
+            normalizedWarehouseId,
+            giftProductId
+        ]
+    );
+
+    if (!giftStockRows.length) {
+        return {
+            isValid: false,
+            error: "Товар-подарунок загальної акції не знайдено на обраному складі"
+        };
+    }
+
+    const giftStock = giftStockRows[0];
+
+    giftStock.product_display_name =
+        giftStock.product_display_name ||
+        giftStock.catalog_display_name ||
+        "Подарунок";
+
+    if (
+        isStaffCertificateStock({
+            product_key: giftStock.product_key || giftStock.catalog_product_key,
+            product_display_name: giftStock.product_display_name,
+            display_name: giftStock.catalog_display_name,
+            product_label: giftStock.product_label,
+            category_slug: giftStock.category_slug
+        })
+    ) {
+        return {
+            isValid: false,
+            error: "Сертифікат не можна списати як загальний подарунок"
+        };
+    }
+
+    const currentGiftBalance =
+        giftStock.final_quantity !== null && giftStock.final_quantity !== undefined
+            ? Number(giftStock.final_quantity || 0)
+            : Number(giftStock.initial_quantity || 0) - Number(giftStock.sales_quantity || 0);
+
+    if (!allowOutOfStock && currentGiftBalance < 1) {
+        return {
+            isValid: false,
+            code: "out_of_stock_confirm_required",
+            outOfStockItems: [
+                {
+                    productName: `${giftStock.product_display_name} (загальний подарунок)`,
+                    currentBalance: currentGiftBalance,
+                    requestedQuantity: 1
+                }
+            ],
+            productName: `${giftStock.product_display_name} (загальний подарунок)`,
+            currentBalance: currentGiftBalance,
+            requestedQuantity: 1,
+            error: "Недостатньо залишку по товару-подарунку"
+        };
+    }
+
+    return {
+        isValid: true,
+        campaign: matchedCampaign,
+        giftStock,
+        note: `Загальний подарунок ${matchedCampaign.title || "до акції"}: ${giftStock.product_display_name}`
+    };
+}
+
 async function calculateStaffFocusProductDiscount(connection, saleRows, warehouseId, customerId = 0) {
     const normalizedWarehouseId = Number(warehouseId || 0);
 
@@ -8232,7 +8413,32 @@ app.post("/api/staff/create-sale", async (req, res) => {
         const grossTotalAmount = saleRows.reduce((sum, row) => sum + row.rowTotal, 0);
         const totalQuantity = saleRows.reduce((sum, row) => sum + row.quantity, 0);
 
-        const availablePublicPromoCodes = skipPublicPromo
+        const selectedManualPromoCount = [
+            selectedPublicPromoCodeId > 0,
+            Boolean(personalPromoCode),
+            personalGiftOfferId > 0,
+            personalPercentOfferId > 0
+        ].filter(Boolean).length;
+
+        if (selectedManualPromoCount > 1) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: "В одному чеку можна застосувати тільки одну промопропозицію"
+            });
+        }
+
+        const hasSelectedPersonalPromo =
+            Boolean(personalPromoCode) ||
+            personalGiftOfferId > 0 ||
+            personalPercentOfferId > 0;
+
+        const shouldSkipPublicPromos =
+            skipPublicPromo ||
+            hasSelectedPersonalPromo;
+
+        const availablePublicPromoCodes = shouldSkipPublicPromos
             ? []
             : await getStaffPublicPromoCodeOptions(
                 connection,
@@ -8280,7 +8486,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
         );
 
         const focusPromoDiscount =
-            skipPublicPromo || publicPromoCodeDiscountAmount > 0
+            shouldSkipPublicPromos || publicPromoCodeDiscountAmount > 0
                 ? {
                     discountAmount: 0,
                     note: ""
@@ -8301,6 +8507,43 @@ app.post("/api/staff/create-sale", async (req, res) => {
             0,
             totalAfterPublicPromoCode - focusProductDiscountAmount
         );
+
+        const publicGiftPromo =
+            shouldSkipPublicPromos ||
+            publicPromoCodeDiscountAmount > 0 ||
+            focusProductDiscountAmount > 0
+                ? {
+                    isValid: true,
+                    campaign: null,
+                    giftStock: null,
+                    note: ""
+                }
+                : await calculateStaffPublicGiftPromo(
+                    connection,
+                    saleRows,
+                    warehouseId,
+                    customerId,
+                    {
+                        allowOutOfStock,
+                        lockStock: true
+                    }
+                );
+
+        if (!publicGiftPromo.isValid) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                code: publicGiftPromo.code,
+                outOfStockItems: publicGiftPromo.outOfStockItems,
+                productName: publicGiftPromo.productName,
+                currentBalance: publicGiftPromo.currentBalance,
+                requestedQuantity: publicGiftPromo.requestedQuantity,
+                error: publicGiftPromo.error || "Загальний подарунок не застосовано"
+            });
+        }
+
+        const publicGiftStock = publicGiftPromo.giftStock || null;
 
         const welcomeDiscount = await calculateStaffWelcomeDiscount(
             connection,
@@ -8412,6 +8655,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const personalPercentOfferNote = personalPercentOfferDiscountAmount > 0
             ? `, ${personalPercentOfferDiscount.note || `Персональна % знижка: -${personalPercentOfferDiscountAmount} грн`}`
+            : "";
+
+        const publicGiftPromoNote = publicGiftStock
+            ? `, ${publicGiftPromo.note || `Загальний подарунок: ${publicGiftStock.product_display_name}`}`
             : "";
 
         const shouldMarkWelcomeDiscountUsed =
@@ -8927,13 +9174,18 @@ app.post("/api/staff/create-sale", async (req, res) => {
             `${getStaffSaleProductText(row)} × ${row.quantity} — ${row.unitPrice} грн = ${row.rowTotal} грн`
         ).join("\n");
 
-        const giftItemsText = personalGiftStock
-            ? `${personalGiftStock.product_display_name} × 1 — 0 грн = 0 грн (подарунок до акції)`
+        const personalGiftItemsText = personalGiftStock
+            ? `${personalGiftStock.product_display_name} × 1 — 0 грн = 0 грн (персональний подарунок до акції)`
+            : "";
+
+        const publicGiftItemsText = publicGiftStock
+            ? `${publicGiftStock.product_display_name} × 1 — 0 грн = 0 грн (загальний подарунок до акції)`
             : "";
 
         const itemsText = [
             saleItemsText,
-            giftItemsText
+            personalGiftItemsText,
+            publicGiftItemsText
         ]
             .filter(Boolean)
             .join("\n");
@@ -9119,6 +9371,57 @@ app.post("/api/staff/create-sale", async (req, res) => {
             );
         }
 
+        if (publicGiftStock) {
+            await connection.query(
+                `
+                UPDATE stock_balances
+                SET sales_quantity = sales_quantity + 1
+                WHERE id = ?
+                  AND warehouse_id = ?
+                `,
+                [
+                    publicGiftStock.id,
+                    warehouseId
+                ]
+            );
+
+            await connection.query(
+                `
+                INSERT INTO stock_movements
+                (
+                    document_number,
+                    movement_type,
+                    warehouse_id,
+                    warehouse_name,
+                    stock_balance_id,
+                    product_id,
+                    product_key,
+                    product_display_name,
+                    quantity,
+                    retail_price,
+                    cost_price,
+                    realization_price,
+                    created_by_staff_id,
+                    created_by_name
+                )
+                VALUES (?, 'sale_gift', ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+                `,
+                [
+                    orderId,
+                    publicGiftStock.warehouse_id,
+                    publicGiftStock.warehouse_name,
+                    publicGiftStock.id,
+                    publicGiftStock.product_id,
+                    publicGiftStock.product_key,
+                    `${publicGiftStock.product_display_name} (загальний подарунок до акції)`,
+                    publicGiftStock.cost_price,
+                    publicGiftStock.realization_price,
+                    staff.id,
+                    staff.name
+                ]
+            );
+        }        
+
         if (personalGiftStock) {
             await connection.query(
                 `
@@ -9259,7 +9562,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 paidAmount,
                 dueAmount,
                 paymentLabel,
-                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${publicPromoCodeNote}${welcomeDiscountNote}${statusDiscountNote}${personalPromoCodeNote}${personalPercentOfferNote}${personalGiftNote}${certificateNote}`
+                `Staff sale: ${staff.name || "—"} (${staff.role}), склад ${mainWarehouseName || "—"} ID ${warehouseId}${focusPromoNote}${publicPromoCodeNote}${publicGiftPromoNote}${welcomeDiscountNote}${statusDiscountNote}${personalPromoCodeNote}${personalPercentOfferNote}${personalGiftNote}${certificateNote}`
             ]
         );
 
@@ -9374,6 +9677,10 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 personalPromoCodeNote,
                 personalPercentOfferDiscountAmount,
                 personalPercentOfferNote,
+                publicGiftPromoNote,
+                publicGiftProductName: publicGiftStock
+                    ? publicGiftStock.product_display_name
+                    : "",
                 totalAmount,
                 paymentLabel,
                 customerName: customer ? customer.name : "Без клієнта",
