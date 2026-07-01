@@ -5932,6 +5932,473 @@ app.post("/api/staff/public-percent-promo-save", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: PUBLIC GIFT PROMOS ===================== */
+
+function isPublicGiftPromoCertificateOrConsumableWhereSql(alias = "p") {
+    return `
+        NOT (
+            LOWER(TRIM(COALESCE(${alias}.product_key, ''))) LIKE 'certificate_%'
+            OR LOWER(TRIM(COALESCE(${alias}.display_name, ''))) LIKE '%сертифікат%'
+            OR LOWER(TRIM(COALESCE(${alias}.product_label, ''))) LIKE '%сертифікат%'
+            OR LOWER(TRIM(COALESCE(${alias}.category_slug, ''))) = 'certificates'
+            OR LOWER(TRIM(COALESCE(${alias}.category_slug, ''))) = 'consumables'
+            OR LOWER(TRIM(COALESCE(${alias}.product_key, ''))) LIKE 'consumable_%'
+            OR LOWER(TRIM(COALESCE(${alias}.display_name, ''))) LIKE '%розхідник%'
+            OR LOWER(TRIM(COALESCE(${alias}.product_label, ''))) LIKE '%розхідник%'
+            OR LOWER(TRIM(COALESCE(${alias}.product_name, ''))) LIKE '%розхідник%'
+        )
+    `;
+}
+
+app.post("/api/staff/public-gift-promos-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        await deactivateExpiredPromos(db);
+
+        const [campaigns] = await db.query(
+            `
+            SELECT
+                c.id,
+                c.title,
+                c.promo_type,
+                c.discount_percent,
+                c.focus_product_id,
+                DATE_FORMAT(c.starts_at, '%Y-%m-%d %H:%i:%s') AS starts_at,
+                DATE_FORMAT(c.ends_at, '%Y-%m-%d %H:%i:%s') AS ends_at,
+                c.is_active,
+                c.audience,
+                c.exclude_certificates,
+                c.exclude_from_personal_discount,
+                c.combinable,
+                c.target_apply_limit,
+                c.target_selection,
+                c.priority,
+                c.created_at,
+
+                p.product_key AS gift_product_key,
+                p.product_name AS gift_product_name,
+                p.product_label AS gift_product_label,
+                p.category_slug AS gift_category_slug,
+                p.price AS gift_price,
+                p.display_name AS gift_display_name
+            FROM promo_campaigns c
+            LEFT JOIN products_catalog p
+                ON p.id = c.focus_product_id
+            WHERE c.promo_type = 'public_gift'
+              AND c.audience = 'public'
+            ORDER BY c.starts_at DESC, c.id DESC
+            `
+        );
+
+        const campaignIds = campaigns
+            .map(campaign => Number(campaign.id || 0))
+            .filter(id => Number.isInteger(id) && id > 0);
+
+        let campaignWarehouses = [];
+
+        if (campaignIds.length) {
+            const placeholders = campaignIds.map(() => "?").join(",");
+
+            const [warehouseRows] = await db.query(
+                `
+                SELECT
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id,
+                    COALESCE(
+                        MAX(sb.warehouse_name),
+                        CONCAT('Склад ID ', pcw.warehouse_id)
+                    ) AS warehouse_name
+                FROM promo_campaign_warehouses pcw
+                LEFT JOIN stock_balances sb
+                    ON sb.warehouse_id = pcw.warehouse_id
+                WHERE pcw.promo_campaign_id IN (${placeholders})
+                GROUP BY
+                    pcw.promo_campaign_id,
+                    pcw.warehouse_id
+                ORDER BY
+                    pcw.promo_campaign_id ASC,
+                    pcw.warehouse_id ASC
+                `,
+                campaignIds
+            );
+
+            campaignWarehouses = warehouseRows;
+        }
+
+        const warehousesByCampaign = new Map();
+
+        campaignWarehouses.forEach(row => {
+            const promoId = Number(row.promo_campaign_id || 0);
+
+            if (!warehousesByCampaign.has(promoId)) {
+                warehousesByCampaign.set(promoId, []);
+            }
+
+            warehousesByCampaign.get(promoId).push({
+                warehouse_id: Number(row.warehouse_id || 0),
+                warehouse_name: row.warehouse_name || `Склад ID ${row.warehouse_id}`
+            });
+        });
+
+        return res.json({
+            ok: true,
+            campaigns: campaigns.map(campaign => {
+                const campaignWarehousesList =
+                    warehousesByCampaign.get(Number(campaign.id || 0)) || [];
+
+                return {
+                    id: campaign.id,
+                    title: campaign.title,
+                    promo_type: campaign.promo_type,
+                    discount_percent: Number(campaign.discount_percent || 0),
+                    focus_product_id: campaign.focus_product_id,
+                    starts_at: campaign.starts_at,
+                    ends_at: campaign.ends_at,
+                    is_active: Number(campaign.is_active) === 1,
+                    audience: campaign.audience,
+                    exclude_certificates: Number(campaign.exclude_certificates) === 1,
+                    exclude_from_personal_discount: Number(campaign.exclude_from_personal_discount) === 1,
+                    combinable: Number(campaign.combinable) === 1,
+                    target_apply_limit: campaign.target_apply_limit,
+                    target_selection: campaign.target_selection,
+                    priority: campaign.priority,
+                    created_at: campaign.created_at,
+                    gift_product: {
+                        id: campaign.focus_product_id,
+                        product_key: campaign.gift_product_key,
+                        product_name: campaign.gift_product_name,
+                        product_label: campaign.gift_product_label,
+                        category_slug: campaign.gift_category_slug,
+                        price: campaign.gift_price,
+                        display_name: campaign.gift_display_name
+                    },
+                    warehouse_ids: campaignWarehousesList.map(warehouse => warehouse.warehouse_id),
+                    warehouses: campaignWarehousesList
+                };
+            })
+        });
+
+    } catch (err) {
+        console.error("STAFF PUBLIC GIFT PROMOS LIST ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/public-gift-promo-save", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const promoId = Number(req.body.promoId || 0);
+
+        const title = String(req.body.title || "").trim();
+        const giftProductId = Number(req.body.giftProductId || 0);
+        const startsAt = String(req.body.startsAt || "").trim() || null;
+        const endsAt = String(req.body.endsAt || "").trim() || null;
+        const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+
+        const categorySlugs = normalizePublicPercentPromoCategorySlugs(
+            req.body.categorySlugs
+        );
+
+        const productIds = normalizePublicPercentPromoProductIds(
+            req.body.productIds
+        );
+
+        const warehouseIds = normalizePublicPercentPromoProductIds(
+            req.body.warehouseIds
+        );
+
+        if (!staffId) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const adminCheck = await getAdminStaffOrDeny(staffId);
+
+        if (!adminCheck.ok) {
+            connection.release();
+
+            return res.status(adminCheck.status).json({
+                ok: false,
+                error: adminCheck.error
+            });
+        }
+
+        if (!title) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть назву загального подарунку"
+            });
+        }
+
+        if (!giftProductId) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть товар-подарунок"
+            });
+        }
+
+        if (!startsAt || !endsAt) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть дату початку і дату завершення"
+            });
+        }
+
+        const startsTime = new Date(startsAt).getTime();
+        const endsTime = new Date(endsAt).getTime();
+
+        if (!Number.isFinite(startsTime) || !Number.isFinite(endsTime) || startsTime >= endsTime) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректний період дії загального подарунку"
+            });
+        }
+
+        if (!warehouseIds.length) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Оберіть хоча б один staff-склад"
+            });
+        }
+
+        const [giftRows] = await connection.query(
+            `
+            SELECT id
+            FROM products_catalog p
+            WHERE p.id = ?
+              AND p.is_active = 1
+              AND ${isPublicGiftPromoCertificateOrConsumableWhereSql("p")}
+            LIMIT 1
+            `,
+            [giftProductId]
+        );
+
+        if (!giftRows.length) {
+            connection.release();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Подарунок не знайдено або цей товар не можна використовувати як подарунок"
+            });
+        }
+
+        if (productIds.length) {
+            const productPlaceholders = productIds.map(() => "?").join(",");
+
+            const [allowedProducts] = await connection.query(
+                `
+                SELECT id
+                FROM products_catalog p
+                WHERE p.id IN (${productPlaceholders})
+                  AND p.is_active = 1
+                  AND ${isPublicGiftPromoCertificateOrConsumableWhereSql("p")}
+                `,
+                productIds
+            );
+
+            if (allowedProducts.length !== productIds.length) {
+                connection.release();
+
+                return res.status(400).json({
+                    ok: false,
+                    error: "В умову подарунку не можна додавати неактивні товари, сертифікати або розхідники"
+                });
+            }
+        }
+
+        if (promoId) {
+            const [existingRows] = await connection.query(
+                `
+                SELECT id
+                FROM promo_campaigns
+                WHERE id = ?
+                  AND promo_type = 'public_gift'
+                LIMIT 1
+                `,
+                [promoId]
+            );
+
+            if (!existingRows.length) {
+                connection.release();
+
+                return res.status(404).json({
+                    ok: false,
+                    error: "Загальний подарунок не знайдено"
+                });
+            }
+        }
+
+        const targetSelection = buildPublicPercentPromoTargetSelection(
+            categorySlugs,
+            productIds
+        );
+
+        const priority = 30;
+
+        await connection.beginTransaction();
+
+        let savedPromoId = promoId;
+
+        if (promoId) {
+            await connection.query(
+                `
+                UPDATE promo_campaigns
+                SET
+                    title = ?,
+                    discount_percent = 0,
+                    focus_product_id = ?,
+                    starts_at = ?,
+                    ends_at = ?,
+                    is_active = ?,
+                    audience = 'public',
+                    exclude_certificates = 1,
+                    exclude_from_personal_discount = 1,
+                    combinable = 0,
+                    target_apply_limit = NULL,
+                    target_selection = ?,
+                    priority = ?
+                WHERE id = ?
+                  AND promo_type = 'public_gift'
+                `,
+                [
+                    title,
+                    giftProductId,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    targetSelection,
+                    priority,
+                    promoId
+                ]
+            );
+        } else {
+            const [result] = await connection.query(
+                `
+                INSERT INTO promo_campaigns
+                (
+                    title,
+                    promo_type,
+                    discount_percent,
+                    focus_product_id,
+                    starts_at,
+                    ends_at,
+                    is_active,
+                    created_at,
+                    audience,
+                    exclude_certificates,
+                    exclude_from_personal_discount,
+                    combinable,
+                    target_apply_limit,
+                    target_selection,
+                    priority
+                )
+                VALUES (?, 'public_gift', 0, ?, ?, ?, ?, NOW(), 'public', 1, 1, 0, NULL, ?, ?)
+                `,
+                [
+                    title,
+                    giftProductId,
+                    startsAt,
+                    endsAt,
+                    isActive,
+                    targetSelection,
+                    priority
+                ]
+            );
+
+            savedPromoId = result.insertId;
+        }
+
+        await connection.query(
+            `
+            DELETE FROM promo_campaign_warehouses
+            WHERE promo_campaign_id = ?
+            `,
+            [savedPromoId]
+        );
+
+        await connection.query(
+            `
+            INSERT INTO promo_campaign_warehouses
+            (
+                promo_campaign_id,
+                warehouse_id
+            )
+            VALUES ?
+            `,
+            [
+                warehouseIds.map(warehouseId => [
+                    savedPromoId,
+                    warehouseId
+                ])
+            ]
+        );
+
+        await connection.commit();
+
+        clearPublicPromoCampaignsCache();
+        connection.release();
+
+        return res.json({
+            ok: true,
+            promoId: savedPromoId,
+            targetSelection
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error("STAFF PUBLIC GIFT PROMO ROLLBACK ERROR:", rollbackErr);
+        }
+
+        connection.release();
+
+        console.error("STAFF PUBLIC GIFT PROMO SAVE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: GET PRODUCTS ===================== */
 
 app.post("/api/staff/products", async (req, res) => {
