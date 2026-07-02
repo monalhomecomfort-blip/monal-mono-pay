@@ -1413,11 +1413,20 @@ async function calculateStaffPublicGiftPromo(
         };
     }
 
-    const matchedCampaign = campaignRows.find(campaign =>
-        saleRows.some(row =>
+    let matchedCampaign = null;
+    let matchedSaleRow = null;
+
+    for (const campaign of campaignRows) {
+        const saleRow = saleRows.find(row =>
             isStaffPublicPercentPromoRowMatched(row, campaign)
-        )
-    );
+        );
+
+        if (saleRow) {
+            matchedCampaign = campaign;
+            matchedSaleRow = saleRow;
+            break;
+        }
+    }
 
     if (!matchedCampaign) {
         return {
@@ -1524,11 +1533,22 @@ async function calculateStaffPublicGiftPromo(
         };
     }
 
+    const conditionProductName = String(
+        matchedSaleRow?.stock?.product_display_name ||
+        matchedSaleRow?.stock?.catalog_display_name ||
+        matchedSaleRow?.stock?.product_key ||
+        ""
+    ).trim();
+
+    const promoNote = conditionProductName
+        ? `Діє акція: у подарунок ${giftStock.product_display_name} за купівлю ${conditionProductName}.`
+        : `Діє акція: у подарунок ${giftStock.product_display_name}.`;
+
     return {
         isValid: true,
         campaign: matchedCampaign,
         giftStock,
-        note: `Загальний подарунок ${matchedCampaign.title || "до акції"}: ${giftStock.product_display_name}`
+        note: promoNote
     };
 }
 
@@ -2458,7 +2478,7 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             : null;
 
         const publicGiftPromoNote = publicGiftStock
-            ? publicGiftPromo.note || `Загальний подарунок: ${publicGiftStock.product_display_name}`
+            ? publicGiftPromo.note || `Діє акція: у подарунок ${publicGiftStock.product_display_name}.`
             : "";
 
         const welcomeDiscount = await calculateStaffWelcomeDiscount(
@@ -8693,7 +8713,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
             : "";
 
         const publicGiftPromoNote = publicGiftStock
-            ? `, ${publicGiftPromo.note || `Загальний подарунок: ${publicGiftStock.product_display_name}`}`
+            ? `, ${publicGiftPromo.note || `Діє акція: у подарунок ${publicGiftStock.product_display_name}.`}`
             : "";
 
         const shouldMarkWelcomeDiscountUsed =
