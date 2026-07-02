@@ -1061,12 +1061,21 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
         const [activeRows] = await db.query({
             sql: `
                 SELECT id
-                FROM promo_campaigns
-                WHERE is_active = 1
-                  AND audience = 'public'
-                  AND (starts_at IS NULL OR starts_at <= NOW())
-                  AND (ends_at IS NULL OR ends_at >= NOW())
-                ORDER BY priority ASC, id DESC
+                FROM promo_campaigns c
+                WHERE c.is_active = 1
+                  AND c.audience = 'public'
+                  AND (c.starts_at IS NULL OR c.starts_at <= NOW())
+                  AND (c.ends_at IS NULL OR c.ends_at >= NOW())
+                  AND (
+                        c.promo_type <> 'public_gift'
+                        OR EXISTS (
+                            SELECT 1
+                            FROM promo_campaign_warehouses pcw_site
+                            WHERE pcw_site.promo_campaign_id = c.id
+                              AND pcw_site.warehouse_id = 0
+                        )
+                  )
+                ORDER BY c.priority ASC, c.id DESC
                 LIMIT 1
             `,
             timeout: 2000
@@ -1118,6 +1127,15 @@ app.get("/api/public-promo-campaigns", async (req, res) => {
                   AND (c.starts_at IS NULL OR c.starts_at <= NOW())
                   AND (c.ends_at IS NULL OR c.ends_at >= NOW())
                   AND (p.id IS NULL OR COALESCE(p.staff_only, 0) = 0)
+                  AND (
+                        c.promo_type <> 'public_gift'
+                        OR EXISTS (
+                            SELECT 1
+                            FROM promo_campaign_warehouses pcw_site
+                            WHERE pcw_site.promo_campaign_id = c.id
+                              AND pcw_site.warehouse_id = 0
+                        )
+                  )
                 ORDER BY c.priority ASC, c.id DESC
                 LIMIT 10
             `,
@@ -6257,10 +6275,13 @@ app.post("/api/staff/public-gift-promos-list", async (req, res) => {
                 SELECT
                     pcw.promo_campaign_id,
                     pcw.warehouse_id,
-                    COALESCE(
-                        MAX(sb.warehouse_name),
-                        CONCAT('Склад ID ', pcw.warehouse_id)
-                    ) AS warehouse_name
+                    CASE
+                        WHEN pcw.warehouse_id = 0 THEN 'Сайт'
+                        ELSE COALESCE(
+                            MAX(sb.warehouse_name),
+                            CONCAT('Склад ID ', pcw.warehouse_id)
+                        )
+                    END AS warehouse_name
                 FROM promo_campaign_warehouses pcw
                 LEFT JOIN stock_balances sb
                     ON sb.warehouse_id = pcw.warehouse_id
@@ -6325,6 +6346,9 @@ app.post("/api/staff/public-gift-promos-list", async (req, res) => {
                         price: campaign.gift_price,
                         display_name: campaign.gift_display_name
                     },
+                    site_enabled: campaignWarehousesList.some(warehouse =>
+                        Number(warehouse.warehouse_id || 0) === 0
+                    ),
                     warehouse_ids: campaignWarehousesList.map(warehouse => warehouse.warehouse_id),
                     warehouses: campaignWarehousesList
                 };
@@ -6353,6 +6377,7 @@ app.post("/api/staff/public-gift-promo-save", async (req, res) => {
         const startsAt = String(req.body.startsAt || "").trim() || null;
         const endsAt = String(req.body.endsAt || "").trim() || null;
         const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+        const siteEnabled = Number(req.body.siteEnabled) === 1 ? 1 : 0;
 
         const categorySlugs = normalizePublicPercentPromoCategorySlugs(
             req.body.categorySlugs
@@ -6425,12 +6450,12 @@ app.post("/api/staff/public-gift-promo-save", async (req, res) => {
             });
         }
 
-        if (!warehouseIds.length) {
+        if (!siteEnabled && !warehouseIds.length) {
             connection.release();
 
             return res.status(400).json({
                 ok: false,
-                error: "Оберіть хоча б один staff-склад"
+                error: "Оберіть сайт або хоча б один staff-склад"
             });
         }
 
@@ -6589,6 +6614,21 @@ app.post("/api/staff/public-gift-promo-save", async (req, res) => {
             [savedPromoId]
         );
 
+        const publicGiftPromoWarehouseRows = [
+            ...(siteEnabled
+                ? [
+                    [
+                        savedPromoId,
+                        0
+                    ]
+                ]
+                : []),
+            ...warehouseIds.map(warehouseId => [
+                savedPromoId,
+                warehouseId
+            ])
+        ];
+
         await connection.query(
             `
             INSERT INTO promo_campaign_warehouses
@@ -6599,10 +6639,7 @@ app.post("/api/staff/public-gift-promo-save", async (req, res) => {
             VALUES ?
             `,
             [
-                warehouseIds.map(warehouseId => [
-                    savedPromoId,
-                    warehouseId
-                ])
+                publicGiftPromoWarehouseRows
             ]
         );
 
