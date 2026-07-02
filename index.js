@@ -2307,6 +2307,8 @@ app.post("/api/staff/sale-preview", async (req, res) => {
                 selectedPublicPromoCodeId: 0,
                 publicPromoCodeDiscountAmount: 0,
                 publicPromoCodeNote: "",
+                publicGiftPromoNote: "",
+                publicGiftProductName: "",
                 welcomeDiscountAmount: 0,
                 welcomeDiscountNote: "",
                 welcomeDiscountAvailable: false,
@@ -2430,6 +2432,35 @@ app.post("/api/staff/sale-preview", async (req, res) => {
             totalAfterPublicPromoCode - focusProductDiscountAmount
         );
 
+        const publicGiftPromo =
+            skipPublicPromo ||
+            publicPromoCodeDiscountAmount > 0 ||
+            focusProductDiscountAmount > 0
+                ? {
+                    isValid: true,
+                    campaign: null,
+                    giftStock: null,
+                    note: ""
+                }
+                : await calculateStaffPublicGiftPromo(
+                    connection,
+                    saleRows,
+                    warehouseId,
+                    customerId,
+                    {
+                        allowOutOfStock: true,
+                        lockStock: false
+                    }
+                );
+
+        const publicGiftStock = publicGiftPromo.isValid
+            ? publicGiftPromo.giftStock || null
+            : null;
+
+        const publicGiftPromoNote = publicGiftStock
+            ? publicGiftPromo.note || `Загальний подарунок: ${publicGiftStock.product_display_name}`
+            : "";
+
         const welcomeDiscount = await calculateStaffWelcomeDiscount(
             connection,
             saleRows,
@@ -2501,6 +2532,10 @@ app.post("/api/staff/sale-preview", async (req, res) => {
                 : "",
             publicPromoCodeMessage: selectedPublicPromoCodeOption
                 ? selectedPublicPromoCodeOption.message || ""
+                : "",
+            publicGiftPromoNote,
+            publicGiftProductName: publicGiftStock
+                ? publicGiftStock.product_display_name
                 : "",
             welcomeDiscountAmount,
             welcomeDiscountNote: welcomeDiscount.note || "",
