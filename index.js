@@ -2657,11 +2657,14 @@ function isPersonalOfferCertificateItem(item) {
     const name = String(item?.name || item?.product_name || item?.display_name || "").toLowerCase();
     const label = String(item?.label || item?.product_label || "").toLowerCase();
     const categorySlug = String(item?.category_slug || "").toLowerCase();
+    const type = String(item?.type || "").toLowerCase();
 
     return (
         name.includes("сертиф") ||
         label.includes("сертиф") ||
-        categorySlug.includes("certificate")
+        categorySlug.includes("certificate") ||
+        type === "gift_packaging" ||
+        categorySlug === "gift_packaging"
     );
 }
 
