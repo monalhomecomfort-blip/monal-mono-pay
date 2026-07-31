@@ -4162,10 +4162,22 @@ function buildStaffProductKey({ categorySlug, productName, capacityMl }) {
         .join("_");
 }
 
-function buildStaffProductDisplayName({ productLabel, productName, capacityMl }) {
+function buildStaffProductDisplayName({
+    productLabel,
+    productName,
+    capacityMl,
+    categorySlug
+}) {
     const label = normalizeStaffProductName(productLabel);
     const name = normalizeStaffProductName(productName);
     const capacity = normalizeStaffProductCapacityMl(capacityMl);
+    const normalizedCategorySlug = String(categorySlug || "")
+        .trim()
+        .toLowerCase();
+
+    if (normalizedCategorySlug === "gift_packaging") {
+        return name;
+    }
 
     return [
         label,
@@ -6880,12 +6892,19 @@ app.post("/api/staff/admin-create-product", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
         const categorySlug = String(req.body.categorySlug || "").trim();
+        const isGiftPackaging =
+            categorySlug.toLowerCase() === "gift_packaging";
+
         const productName = normalizeStaffProductName(req.body.productName);
-        const capacityMl = normalizeStaffProductCapacityMl(req.body.capacityMl);
+        const capacityMl = isGiftPackaging
+            ? null
+            : normalizeStaffProductCapacityMl(req.body.capacityMl);
+
         const price = normalizeStaffProductPrice(req.body.price);
         const costPrice = normalizeStaffProductPrice(req.body.costPrice);
         const realizationPrice = normalizeStaffProductPrice(req.body.realizationPrice);
         const isActive = Number(req.body.isActive) === 1 ? 1 : 0;
+        const staffOnly = isGiftPackaging ? 0 : 1;
 
         const access = await getStaffAdminToolsManagerOrDeny(staffId);
 
@@ -6910,7 +6929,7 @@ app.post("/api/staff/admin-create-product", async (req, res) => {
             });
         }
 
-        if (!capacityMl) {
+        if (!isGiftPackaging && !capacityMl) {
             return res.status(400).json({
                 ok: false,
                 error: "Вкажіть ємність цифрою"
@@ -6948,7 +6967,8 @@ app.post("/api/staff/admin-create-product", async (req, res) => {
         const displayName = buildStaffProductDisplayName({
             productLabel,
             productName,
-            capacityMl
+            capacityMl,
+            categorySlug
         });
 
         if (!productKey) {
@@ -6993,7 +7013,7 @@ app.post("/api/staff/admin-create-product", async (req, res) => {
                 is_active,
                 staff_only
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
             [
                 productKey,
@@ -7005,7 +7025,8 @@ app.post("/api/staff/admin-create-product", async (req, res) => {
                 price,
                 costPrice,
                 realizationPrice,
-                isActive
+                isActive,
+                staffOnly
             ]
         );
 
@@ -7100,7 +7121,7 @@ app.post("/api/staff/admin-create-product", async (req, res) => {
                 cost_price: costPrice,
                 realization_price: realizationPrice,
                 is_active: Boolean(isActive),
-                staff_only: true
+                staff_only: Boolean(staffOnly)
             }
         });
 
@@ -7187,7 +7208,8 @@ app.post("/api/staff/admin-update-product", async (req, res) => {
         const displayName = buildStaffProductDisplayName({
             productLabel: currentProduct.product_label,
             productName,
-            capacityMl: currentProduct.capacity_ml
+            capacityMl: currentProduct.capacity_ml,
+            categorySlug: currentProduct.category_slug
         });
 
         await connection.beginTransaction();
