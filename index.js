@@ -249,6 +249,36 @@ function isStaffCertificateStock(product) {
     );
 }
 
+function isStaffGiftPackagingProduct(product) {
+    const productKey = String(
+        product?.product_key ||
+        product?.catalog_product_key ||
+        ""
+    ).trim().toLowerCase();
+
+    const categorySlug = String(
+        product?.category_slug || ""
+    ).trim().toLowerCase();
+
+    const type = String(
+        product?.type || ""
+    ).trim().toLowerCase();
+
+    return (
+        type === "gift_packaging" ||
+        categorySlug === "gift_packaging" ||
+        productKey === "gift_packaging" ||
+        productKey.startsWith("gift_packaging_")
+    );
+}
+
+function isStaffPromoExcludedProduct(product) {
+    return (
+        isStaffCertificateStock(product) ||
+        isStaffGiftPackagingProduct(product)
+    );
+}
+
 function isStaffDiscoveryProduct(product) {
     const productKey = String(product?.product_key || "").trim().toLowerCase();
     const productName = String(
@@ -1200,7 +1230,7 @@ async function isStaffVipCustomer(connection, customerId) {
 function isStaffPublicPromoCertificateRow(row) {
     return (
         row?.isCertificateProduct ||
-        isStaffCertificateStock(row?.stock)
+        isStaffPromoExcludedProduct(row?.stock)
     );
 }
 
@@ -1514,7 +1544,7 @@ async function calculateStaffPublicGiftPromo(
         "Подарунок";
 
     if (
-        isStaffCertificateStock({
+        isStaffPromoExcludedProduct({
             product_key: giftStock.product_key || giftStock.catalog_product_key,
             product_display_name: giftStock.product_display_name,
             display_name: giftStock.catalog_display_name,
@@ -1524,7 +1554,8 @@ async function calculateStaffPublicGiftPromo(
     ) {
         return {
             isValid: false,
-            error: "Сертифікат не можна списати як загальний подарунок"
+            error: "Сертифікат або подарункове пакування " +
+    "не можна списати як загальний подарунок"
         };
     }
 
@@ -1729,11 +1760,7 @@ async function calculateStaffWelcomeDiscount(connection, saleRows, customerId, w
                 return false;
             }
 
-            if (row?.isCertificateProduct) {
-                return false;
-            }
-
-            if (isStaffCertificateStock(row?.stock)) {
+            if (isStaffPublicPromoCertificateRow(row)) {
                 return false;
             }
 
@@ -1827,11 +1854,7 @@ async function calculateStaffCustomerStatusDiscount(
                 return false;
             }
 
-            if (row?.isCertificateProduct) {
-                return false;
-            }
-
-            if (isStaffCertificateStock(row?.stock)) {
+            if (isStaffPublicPromoCertificateRow(row)) {
                 return false;
             }
 
@@ -2114,10 +2137,7 @@ function getStaffPersonalPercentRowCategoryKeys(row) {
 }
 
 function isStaffPersonalPercentRowMatched(row, offer) {
-    if (
-        row?.isCertificateProduct ||
-        isStaffCertificateStock(row?.stock)
-    ) {
+    if (isStaffPublicPromoCertificateRow(row)) {
         return false;
     }
 
@@ -5270,8 +5290,7 @@ function calculateStaffPublicPromoCodeOption(campaign, saleRows) {
 
     const eligibleTotal = saleRows
         .filter(row =>
-            !row?.isCertificateProduct &&
-            !isStaffCertificateStock(row?.stock)
+            !isStaffPublicPromoCertificateRow(row)
         )
         .reduce((sum, row) => sum + Number(row.rowTotal || 0), 0);
 
@@ -5283,10 +5302,12 @@ function calculateStaffPublicPromoCodeOption(campaign, saleRows) {
         message = "У промо не вказано код";
     } else if (eligibleTotal <= 0) {
         available = false;
-        message = "Промокод не діє на сертифікати";
+        message = "Промокод не діє на сертифікати та подарункове пакування";
     } else if (minOrderAmount > 0 && eligibleTotal < minOrderAmount) {
         available = false;
-        message = `Потрібна сума від ${minOrderAmount} грн без врахування сертифікатів`;
+        message =
+            `Потрібна сума від ${minOrderAmount} грн ` +
+            `без врахування сертифікатів і подарункового пакування`;
     } else if (discountValue <= 0) {
         available = false;
         message = "У промо не вказано суму знижки";
@@ -9113,7 +9134,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                     return false;
                 }
 
-                if (row?.isCertificateProduct || isStaffCertificateStock(row?.stock)) {
+                if (isStaffPublicPromoCertificateRow(row)) {
                     return false;
                 }
 
@@ -9219,7 +9240,7 @@ app.post("/api/staff/create-sale", async (req, res) => {
                 "Подарунок";
 
             if (
-                isStaffCertificateStock({
+                isStaffPromoExcludedProduct({
                     product_key: personalGiftStock.product_key || personalGiftStock.catalog_product_key,
                     product_display_name: personalGiftStock.product_display_name,
                     display_name: personalGiftStock.catalog_display_name,
@@ -9231,7 +9252,9 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
                 return res.status(400).json({
                     ok: false,
-                    error: "Сертифікат не можна списати як подарунок"
+                    error:
+                        "Сертифікат або подарункове пакування " +
+                        "не можна списати як подарунок"
                 });
             }
 
