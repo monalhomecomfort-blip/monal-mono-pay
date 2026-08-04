@@ -1043,7 +1043,8 @@ app.get("/api/products-catalog-public", async (req, res) => {
                 display_name,
                 product_label,
                 category_slug,
-                price
+                price,
+                COALESCE(is_in_stock, 1) AS is_in_stock
             FROM products_catalog
             WHERE is_active = 1
               AND COALESCE(staff_only, 0) = 0
@@ -6904,6 +6905,136 @@ app.post("/api/staff/admin-products-list", async (req, res) => {
             ok: false,
             error: "server error"
         });
+    }
+});
+
+app.post("/api/staff/assortment-products-list", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const [products] = await db.query(
+            `
+            SELECT
+                id,
+                product_key,
+                product_name,
+                display_name,
+                product_label,
+                category_slug,
+                capacity_ml,
+                price,
+                COALESCE(is_in_stock, 1) AS is_in_stock
+            FROM products_catalog
+            WHERE is_active = 1
+              AND COALESCE(staff_only, 0) = 0
+            ORDER BY
+                category_slug ASC,
+                capacity_ml ASC,
+                display_name ASC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            products
+        });
+
+    } catch (err) {
+        console.error("STAFF ASSORTMENT PRODUCTS LIST ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            products: [],
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/staff/assortment-update-stock", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+        const products = Array.isArray(req.body.products)
+            ? req.body.products
+            : [];
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const normalizedProducts = products
+            .map(product => ({
+                id: Number(product?.id || 0),
+                isInStock: Number(product?.isInStock) === 1 ? 1 : 0
+            }))
+            .filter(product => product.id > 0);
+
+        if (!normalizedProducts.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Не передано товари для збереження"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        for (const product of normalizedProducts) {
+            await connection.query(
+                `
+                UPDATE products_catalog
+                SET is_in_stock = ?
+                WHERE id = ?
+                  AND is_active = 1
+                  AND COALESCE(staff_only, 0) = 0
+                `,
+                [
+                    product.isInStock,
+                    product.id
+                ]
+            );
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            updatedCount: normalizedProducts.length
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error(
+                "STAFF ASSORTMENT UPDATE ROLLBACK ERROR:",
+                rollbackErr
+            );
+        }
+
+        console.error("STAFF ASSORTMENT UPDATE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
     }
 });
 
