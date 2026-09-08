@@ -12118,7 +12118,6 @@ app.post("/register-order", async (req, res) => {
             focusProductDiscount,
             certificates,
             usedCertificates,
-            certificateType,
             buyerName,
             buyerPhone,
             delivery,
@@ -12198,7 +12197,6 @@ app.post("/register-order", async (req, res) => {
             // для сертифікатів
             certificates: Array.isArray(certificates) ? certificates : null,
             usedCertificates: Array.isArray(usedCertificates) ? usedCertificates : [],
-            certificateType: certificateType || "електронний",
 
             // 👇 ДАНІ ДЛЯ ORDERS_LOG
             buyerName: buyerName || "",
@@ -12498,14 +12496,28 @@ app.post("/mono-webhook", async (req, res) => {
         `💳 ${order.paymentLabel || "—"}\n` +
         (order.orderNote ? `📝 *Примітка:* ${order.orderNote}\n` : "");
 
-    // 🎁 Тип сертифікату (якщо є)
-    if (order.certificates && order.certificates.length > 0) {
-        finalText +=
-            `🎁 *Тип сертифікату:* ${
-                order.certificateType === "фізичний"
+    // 🎁 Сертифікати (якщо є)
+    if (
+        Array.isArray(order.certificates) &&
+        order.certificates.length > 0
+    ) {
+        finalText += "🎁 *Сертифікати:*\n";
+
+        order.certificates.forEach(cert => {
+            const certificateType = String(
+                cert.certificateType || "електронний"
+            )
+                .trim()
+                .toLowerCase();
+
+            const certificateTypeLabel =
+                certificateType === "фізичний"
                     ? "Фізичний (потрібен друк і відправка)"
-                    : "Електронний"
-            }\n`;
+                    : "Електронний";
+
+            finalText +=
+                `• ${Number(cert.nominal || 0)} грн — ${certificateTypeLabel}\n`;
+        });
     }
 
     // ===============================
@@ -12572,6 +12584,12 @@ if (
     const createdAt = new Date();
 
     for (const cert of order.certificates) {
+        const certificateType = String(
+            cert.certificateType || "електронний"
+        )
+            .trim()
+            .toLowerCase();
+
         const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
         const part1 = Array.from(
@@ -12603,7 +12621,7 @@ if (
                         "",
                         orderId,
                         "active",
-                        order.certificateType || "електронний",
+                        certificateType,
                     ],
                 ],
             },
@@ -12629,7 +12647,7 @@ if (
                 expiresAt,
                 null,
                 "active",
-                order.certificateType || "електронний"
+                certificateType
             ]
         );
     }
