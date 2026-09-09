@@ -178,9 +178,12 @@ async function createPurchasedCertificate({
 
     const certCode = await generateUniqueCertificateCode(connection);
 
+    const giftMode = "self";
+    const giftModeLabel = "Отримувач я";
+
     await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
-        range: `${SHEET_NAME}!A:H`,
+        range: `${SHEET_NAME}!A:O`,
         valueInputOption: "USER_ENTERED",
         requestBody: {
             values: [
@@ -192,7 +195,14 @@ async function createPurchasedCertificate({
                     "",
                     orderId,
                     "active",
-                    certificateType
+                    certificateType,
+                    giftModeLabel,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    ""
                 ]
             ]
         }
@@ -210,9 +220,16 @@ async function createPurchasedCertificate({
             expires_at,
             used_at,
             status,
-            certificate_type
+            certificate_type,
+            gift_mode,
+            recipient_name,
+            recipient_phone,
+            recipient_telegram,
+            recipient_email,
+            greeting_text,
+            greeting_date
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
             certCode,
@@ -223,7 +240,14 @@ async function createPurchasedCertificate({
             expiresAt,
             null,
             "active",
-            certificateType
+            certificateType,
+            giftMode,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
         ]
     );
 
@@ -12503,20 +12527,88 @@ app.post("/mono-webhook", async (req, res) => {
     ) {
         finalText += "🎁 *Сертифікати:*\n";
 
-        order.certificates.forEach(cert => {
+        order.certificates.forEach((cert, index) => {
             const certificateType = String(
                 cert.certificateType || "електронний"
             )
                 .trim()
                 .toLowerCase();
 
+            const giftMode = String(
+                cert.giftMode || "self"
+            )
+                .trim()
+                .toLowerCase();
+
             const certificateTypeLabel =
                 certificateType === "фізичний"
-                    ? "Фізичний (потрібен друк і відправка)"
+                    ? "Фізичний"
                     : "Електронний";
 
             finalText +=
-                `• ${Number(cert.nominal || 0)} грн — ${certificateTypeLabel}\n`;
+                `\n• *Сертифікат ${index + 1}:* ${Number(cert.nominal || 0)} грн\n` +
+                `  Тип: ${certificateTypeLabel}\n` +
+                `  Оформлення: ${
+                    giftMode === "gift"
+                        ? "Подарунок"
+                        : "Отримувач я"
+                }\n`;
+
+            if (giftMode === "gift") {
+                const recipientName = String(
+                    cert.recipientName || ""
+                ).trim();
+
+                const recipientPhone = String(
+                    cert.recipientPhone || ""
+                ).trim();
+
+                const recipientTelegram = String(
+                    cert.recipientTelegram || ""
+                ).trim();
+
+                const recipientEmail = String(
+                    cert.recipientEmail || ""
+                ).trim();
+
+                const greetingText = String(
+                    cert.greetingText || ""
+                ).trim();
+
+                const greetingDate = String(
+                    cert.greetingDate || ""
+                ).trim();
+
+                if (recipientName) {
+                    finalText +=
+                        `  👤 Отримувач: ${recipientName}\n`;
+                }
+
+                if (recipientPhone) {
+                    finalText +=
+                        `  📞 Телефон: ${recipientPhone}\n`;
+                }
+
+                if (recipientTelegram) {
+                    finalText +=
+                        `  💬 Telegram: ${recipientTelegram}\n`;
+                }
+
+                if (recipientEmail) {
+                    finalText +=
+                        `  ✉️ Email: ${recipientEmail}\n`;
+                }
+
+                if (greetingText) {
+                    finalText +=
+                        `  💌 Привітання: ${greetingText}\n`;
+                }
+
+                if (greetingDate) {
+                    finalText +=
+                        `  📅 Дата привітання: ${greetingDate}\n`;
+                }
+            }
         });
     }
 
@@ -12590,6 +12682,41 @@ if (
             .trim()
             .toLowerCase();
 
+        const giftMode = String(
+            cert.giftMode || "self"
+        )
+            .trim()
+            .toLowerCase();
+
+        const recipientName = String(
+            cert.recipientName || ""
+        ).trim();
+
+        const recipientPhone = String(
+            cert.recipientPhone || ""
+        ).trim();
+
+        const recipientTelegram = String(
+            cert.recipientTelegram || ""
+        ).trim();
+
+        const recipientEmail = String(
+            cert.recipientEmail || ""
+        ).trim();
+
+        const greetingText = String(
+            cert.greetingText || ""
+        ).trim();
+
+        const greetingDate = String(
+            cert.greetingDate || ""
+        ).trim();
+
+        const giftModeLabel =
+            giftMode === "gift"
+                ? "Подарунок"
+                : "Отримувач я";
+
         const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
         const part1 = Array.from(
@@ -12609,25 +12736,35 @@ if (
 
         await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
-            range: `${SHEET_NAME}!A:H`,
+            range: `${SHEET_NAME}!A:O`,
             valueInputOption: "USER_ENTERED",
             requestBody: {
                 values: [
                     [
                         certCode,
-                        cert.nominal,
+                        Number(cert.nominal || 0),
                         createdAt.toISOString(),
                         expiresAt.toISOString(),
                         "",
                         orderId,
                         "active",
                         certificateType,
-                    ],
-                ],
-            },
+                        giftModeLabel,
+                        recipientName,
+                        recipientPhone,
+                        recipientTelegram,
+                        recipientEmail,
+                        greetingText,
+                        greetingDate
+                    ]
+                ]
+            }
         });
+
         await db.query(
-            `INSERT INTO certificates (
+            `
+            INSERT INTO certificates
+            (
                 certificate_code,
                 owner_user_id,
                 purchase_order_id,
@@ -12636,18 +12773,39 @@ if (
                 expires_at,
                 used_at,
                 status,
-                certificate_type
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                certificate_type,
+                gift_mode,
+                recipient_name,
+                recipient_phone,
+                recipient_telegram,
+                recipient_email,
+                greeting_text,
+                greeting_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
             [
                 certCode,
-                order.customerDbId || (order.source === "site" ? order.userId : null),
+                order.customerDbId ||
+                    (
+                        order.source === "site"
+                            ? order.userId
+                            : null
+                    ),
                 orderId,
                 Number(cert.nominal || 0),
                 createdAt,
                 expiresAt,
                 null,
                 "active",
-                certificateType
+                certificateType,
+                giftMode,
+                recipientName || null,
+                recipientPhone || null,
+                recipientTelegram || null,
+                recipientEmail || null,
+                greetingText || null,
+                greetingDate || null
             ]
         );
     }
