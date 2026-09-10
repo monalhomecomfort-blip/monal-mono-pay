@@ -206,7 +206,17 @@ async function sendGreetingReminderToAdmin({
                 },
                 body: JSON.stringify({
                     chat_id: process.env.CHAT_ID,
-                    text: reminderText
+                    text: reminderText,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                {
+                                    text: "✅ Привітав",
+                                    callback_data: `greeting_done:${certCode}`
+                                }
+                            ]
+                        ]
+                    }
                 })
             }
         );
@@ -216,7 +226,21 @@ async function sendGreetingReminderToAdmin({
                 "GREETING REMINDER TELEGRAM ERROR:",
                 await response.text()
             );
+            return;
         }
+
+        await db.query(
+            `
+            UPDATE certificates
+            SET
+                delivery_status = 'reminded',
+                delivery_channel = 'manual'
+            WHERE UPPER(certificate_code) = ?
+              AND delivery_status = 'pending'
+            `,
+            [String(certCode || "").trim().toUpperCase()]
+        );
+
     } catch (err) {
         console.error(
             "GREETING REMINDER ERROR:",
@@ -13372,6 +13396,208 @@ app.post("/admin/mark-done", async (req, res) => {
     }
 });
 
+/* ===================== 👑 ADMIN: GREETINGS ===================== */
+
+function isGreetingBotAuthorized(req) {
+    const botSecret = String(
+        req.headers["x-bot-secret"] || ""
+    ).trim();
+
+    const expectedSecret = String(
+        process.env.BOT_TOKEN || ""
+    ).trim();
+
+    return Boolean(
+        botSecret &&
+        expectedSecret &&
+        botSecret === expectedSecret
+    );
+}
+
+app.get("/admin/greetings-today", async (req, res) => {
+    if (!isGreetingBotAuthorized(req)) {
+        return res.status(403).json({
+            ok: false,
+            error: "forbidden"
+        });
+    }
+
+    try {
+        const todayKyiv = getKyivDateString();
+
+        const [rows] = await db.query(
+            `
+            SELECT
+                certificate_code AS certificateCode,
+                nominal,
+                COALESCE(recipient_name, '') AS recipientName,
+                COALESCE(recipient_phone, '') AS recipientPhone,
+                COALESCE(recipient_telegram, '') AS recipientTelegram,
+                COALESCE(recipient_email, '') AS recipientEmail,
+                COALESCE(greeting_text, '') AS greetingText,
+                DATE_FORMAT(greeting_date, '%Y-%m-%d') AS greetingDate,
+                purchase_order_id AS orderId
+            FROM certificates
+            WHERE certificate_type = 'електронний'
+              AND gift_mode = 'gift'
+              AND delivery_status = 'pending'
+              AND greeting_date = ?
+            ORDER BY id ASC
+            `,
+            [todayKyiv]
+        );
+
+        return res.json({
+            ok: true,
+            date: todayKyiv,
+            greetings: rows
+        });
+
+    } catch (err) {
+        console.error(
+            "GET TODAY GREETINGS ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/admin/greeting-reminded", async (req, res) => {
+    if (!isGreetingBotAuthorized(req)) {
+        return res.status(403).json({
+            ok: false,
+            error: "forbidden"
+        });
+    }
+
+    try {
+        const certificateCode = String(
+            req.body?.certificateCode || ""
+        )
+            .trim()
+            .toUpperCase();
+
+        if (!certificateCode) {
+            return res.status(400).json({
+                ok: false,
+                error: "certificateCode missing"
+            });
+        }
+
+        const [result] = await db.query(
+            `
+            UPDATE certificates
+            SET
+                delivery_status = 'reminded',
+                delivery_channel = 'manual'
+            WHERE UPPER(certificate_code) = ?
+              AND delivery_status = 'pending'
+            `,
+            [certificateCode]
+        );
+
+        return res.json({
+            ok: true,
+            updated: result.affectedRows > 0
+        });
+
+    } catch (err) {
+        console.error(
+            "MARK GREETING REMINDED ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+app.post("/admin/greeting-done", async (req, res) => {
+    if (!isGreetingBotAuthorized(req)) {
+        return res.status(403).json({
+            ok: false,
+            error: "forbidden"
+        });
+    }
+
+    try {
+        const certificateCode = String(
+            req.body?.certificateCode || ""
+        )
+            .trim()
+            .toUpperCase();
+
+        if (!certificateCode) {
+            return res.status(400).json({
+                ok: false,
+                error: "certificateCode missing"
+            });
+        }
+
+        const [result] = await db.query(
+            `
+            UPDATE certificates
+            SET
+                delivery_status = 'sent_manual',
+                delivery_channel = 'manual',
+                sent_at = ?
+            WHERE UPPER(certificate_code) = ?
+              AND delivery_status IN ('pending', 'reminded')
+            `,
+            [
+                new Date(),
+                certificateCode
+            ]
+        );
+
+        if (!result.affectedRows) {
+            const [rows] = await db.query(
+                `
+                SELECT delivery_status
+                FROM certificates
+                WHERE UPPER(certificate_code) = ?
+                LIMIT 1
+                `,
+                [certificateCode]
+            );
+
+            if (!rows.length) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "certificate not found"
+                });
+            }
+
+            return res.json({
+                ok: true,
+                alreadyDone:
+                    rows[0].delivery_status === "sent_manual"
+            });
+        }
+
+        return res.json({
+            ok: true,
+            updated: true
+        });
+
+    } catch (err) {
+        console.error(
+            "MARK GREETING DONE ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
 
 /* ===================== 👑 ADMIN: COMPLETED ORDERS ===================== */
 
