@@ -164,6 +164,67 @@ async function generateUniqueCertificateCode(connection) {
     throw new Error("Не вдалося згенерувати унікальний код сертифіката");
 }
 
+function getKyivDateString(date = new Date()) {
+    return new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Kyiv",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).format(date);
+}
+
+async function sendGreetingReminderToAdmin({
+    certCode,
+    nominal,
+    recipientName,
+    recipientPhone,
+    recipientTelegram,
+    recipientEmail,
+    greetingText,
+    greetingDate,
+    orderId
+}) {
+    try {
+        const reminderText =
+            "🎁 ПОТРІБНО НАДІСЛАТИ ПРИВІТАННЯ\n\n" +
+            `Сертифікат: ${certCode}\n` +
+            `Номінал: ${Number(nominal || 0)} грн\n` +
+            `Отримувач: ${recipientName || "—"}\n` +
+            `Телефон: ${recipientPhone || "—"}\n` +
+            `Telegram: ${recipientTelegram || "—"}\n` +
+            `Email: ${recipientEmail || "—"}\n` +
+            `Дата привітання: ${greetingDate || "сьогодні / одразу"}\n\n` +
+            `Текст привітання:\n${greetingText || "—"}\n\n` +
+            `Order ID: ${orderId}`;
+
+        const response = await fetch(
+            `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    chat_id: process.env.CHAT_ID,
+                    text: reminderText
+                })
+            }
+        );
+
+        if (!response.ok) {
+            console.error(
+                "GREETING REMINDER TELEGRAM ERROR:",
+                await response.text()
+            );
+        }
+    } catch (err) {
+        console.error(
+            "GREETING REMINDER ERROR:",
+            err
+        );
+    }
+}
+
 async function createPurchasedCertificate({
     connection,
     orderId,
@@ -12717,6 +12778,29 @@ if (
                 ? "Подарунок"
                 : "Отримувач я";
 
+        const isGiftGreeting =
+            certificateType === "електронний" &&
+            giftMode === "gift";
+
+        const todayKyiv = getKyivDateString(createdAt);
+
+        const shouldSendGreetingReminderNow =
+            isGiftGreeting &&
+            (
+                !greetingDate ||
+                greetingDate === todayKyiv
+            );
+
+        const deliveryStatus =
+            isGiftGreeting
+                ? "pending"
+                : null;
+
+        const deliveryChannel =
+            isGiftGreeting
+                ? "manual"
+                : null;        
+
         const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
         const part1 = Array.from(
@@ -12780,9 +12864,14 @@ if (
                 recipient_telegram,
                 recipient_email,
                 greeting_text,
-                greeting_date
+                greeting_date,
+                delivery_status,
+                delivery_channel,
+                scheduled_at,
+                sent_at,
+                last_send_error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
             [
                 certCode,
@@ -12805,9 +12894,28 @@ if (
                 recipientTelegram || null,
                 recipientEmail || null,
                 greetingText || null,
-                greetingDate || null
+                greetingDate || null,
+                deliveryStatus,
+                deliveryChannel,
+                null,
+                null,
+                null
             ]
         );
+
+        if (shouldSendGreetingReminderNow) {
+            await sendGreetingReminderToAdmin({
+                certCode,
+                nominal: cert.nominal,
+                recipientName,
+                recipientPhone,
+                recipientTelegram,
+                recipientEmail,
+                greetingText,
+                greetingDate,
+                orderId
+            });
+        }
     }
 }
 
