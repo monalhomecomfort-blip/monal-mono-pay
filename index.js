@@ -13148,12 +13148,20 @@ app.post("/send-free-order", async (req, res) => {
         (order.orderNote ? `\n📝 *Примітка:* ${order.orderNote}\n` : "") +
         "\n💳 *Оплата:* Сертифікат (100%)\n";
 
+    const orderReportTotalAmount = Number(
+        order.orderAmount !== undefined &&
+        order.orderAmount !== null &&
+        order.orderAmount !== ""
+            ? order.orderAmount
+            : order.totalAmount || 0
+    );
+
     // 🧾 ЗАПИС У ORDERS_LOG — ОПЛАТА СЕРТИФІКАТОМ 100%
     await appendOrderToOrdersLog({
         orderId: orderId,
         source: order.source || "site",
-        totalAmount: order.totalAmount || "",
-        paidAmount: order.totalAmount || "",
+        totalAmount: orderReportTotalAmount,
+        paidAmount: orderReportTotalAmount,
         dueAmount: 0,
         paymentType: "Оплачено сертифікатом 100%",
         buyerName: order.buyerName || "",
@@ -13162,6 +13170,46 @@ app.post("/send-free-order", async (req, res) => {
         itemsText: order.itemsText || "",
         orderNote: order.orderNote || "",
     });
+
+    // 💾 ЗАПИС У MYSQL
+    try {
+        await db.query(
+            `INSERT INTO orders (
+                order_id,
+                user_id,
+                user_email,
+                source,
+                customer_source,
+                buyer_name,
+                buyer_phone,
+                delivery,
+                items_text,
+                total_amount,
+                paid_amount,
+                due_amount,
+                payment_type,
+                order_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                orderId,
+                order.customerDbId || (order.source === "site" ? order.userId : null),
+                order.userEmail || null,
+                order.source || "site",
+                order.source || "site",
+                order.buyerName || "",
+                order.buyerPhone || "",
+                order.delivery || "",
+                order.itemsText || "",
+                orderReportTotalAmount,
+                orderReportTotalAmount,
+                0,
+                "Оплачено сертифікатом 100%",
+                order.orderNote || ""
+            ]
+        );
+    } catch (err) {
+        console.error("MYSQL FREE ORDER INSERT ERROR:", err);
+    }
 
     await fetch(
         `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
