@@ -1176,6 +1176,189 @@ app.get("/api/products-catalog-public", async (req, res) => {
         });
     }
 });
+
+/* ===================== PRODUCT LIKES ===================== */
+
+const PRODUCT_LIKE_CATEGORIES = new Set([
+    "parfums-100",
+    "parfums-15",
+    "aromadiffusers",
+    "refills",
+    "discovery",
+    "gift-sets",
+    "certificates"
+]);
+
+function normalizeProductLikeField(value, maxLength) {
+    return String(value || "")
+        .trim()
+        .slice(0, maxLength);
+}
+
+function isValidProductLikeVisitorId(visitorId) {
+    return /^[a-zA-Z0-9_-]{16,64}$/.test(visitorId);
+}
+
+function isValidProductLikeKey(productKey) {
+    return /^[a-z0-9][a-z0-9-]{1,119}$/.test(productKey);
+}
+
+app.get("/api/product-likes", async (req, res) => {
+    try {
+        const visitorId = normalizeProductLikeField(
+            req.query.visitorId,
+            64
+        );
+
+        if (!isValidProductLikeVisitorId(visitorId)) {
+            return res.status(400).json({
+                ok: false,
+                error: "invalid visitor"
+            });
+        }
+
+        const [rows] = await db.query(
+            `
+            SELECT product_key
+            FROM product_likes
+            WHERE visitor_id = ?
+            `,
+            [visitorId]
+        );
+
+        return res.json({
+            ok: true,
+            likedProductKeys: rows.map(row => row.product_key)
+        });
+
+    } catch (err) {
+        console.error("GET PRODUCT LIKES ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            likedProductKeys: [],
+            error: "server error"
+        });
+    }
+});
+
+app.post("/api/product-likes/toggle", async (req, res) => {
+    const visitorId = normalizeProductLikeField(
+        req.body.visitorId,
+        64
+    );
+
+    const productKey = normalizeProductLikeField(
+        req.body.productKey,
+        120
+    ).toLowerCase();
+
+    const productName = normalizeProductLikeField(
+        req.body.productName,
+        160
+    );
+
+    const categorySlug = normalizeProductLikeField(
+        req.body.categorySlug,
+        80
+    ).toLowerCase();
+
+    if (
+        !isValidProductLikeVisitorId(visitorId) ||
+        !isValidProductLikeKey(productKey) ||
+        !productName ||
+        !PRODUCT_LIKE_CATEGORIES.has(categorySlug)
+    ) {
+        return res.status(400).json({
+            ok: false,
+            error: "invalid like data"
+        });
+    }
+
+    let connection;
+
+    try {
+        connection = await db.getConnection();
+        await connection.beginTransaction();
+
+        const [existingRows] = await connection.query(
+            `
+            SELECT id
+            FROM product_likes
+            WHERE product_key = ?
+              AND visitor_id = ?
+            LIMIT 1
+            FOR UPDATE
+            `,
+            [
+                productKey,
+                visitorId
+            ]
+        );
+
+        if (existingRows.length) {
+            await connection.query(
+                `
+                DELETE FROM product_likes
+                WHERE id = ?
+                `,
+                [existingRows[0].id]
+            );
+
+            await connection.commit();
+
+            return res.json({
+                ok: true,
+                liked: false,
+                productKey
+            });
+        }
+
+        await connection.query(
+            `
+            INSERT INTO product_likes (
+                product_key,
+                product_name,
+                category_slug,
+                visitor_id
+            )
+            VALUES (?, ?, ?, ?)
+            `,
+            [
+                productKey,
+                productName,
+                categorySlug,
+                visitorId
+            ]
+        );
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            liked: true,
+            productKey
+        });
+
+    } catch (err) {
+        if (connection) {
+            await connection.rollback();
+        }
+
+        console.error("TOGGLE PRODUCT LIKE ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        if (connection) {
+            connection.release();
+        }
+    }
+});
+
 /* ===================== GET ACTIVE PUBLIC PROMO CAMPAIGNS ===================== */
 
 let PUBLIC_PROMO_CAMPAIGNS_CACHE = {
