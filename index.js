@@ -1042,6 +1042,60 @@ app.get("/api/reviews/approved", async (req, res) => {
     }
 });
 
+/* ===================== SAVE PUBLIC ASSORTMENT WISH ===================== */
+app.post("/api/public-assortment-wishes", async (req, res) => {
+    try {
+        const { wish_text } = req.body || {};
+
+        const cleanText = String(wish_text || "").trim();
+
+        if (!cleanText) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing wish"
+            });
+        }
+
+        if (cleanText.length < 3) {
+            return res.status(400).json({
+                ok: false,
+                error: "too short wish"
+            });
+        }
+
+        if (cleanText.length > 1000) {
+            return res.status(400).json({
+                ok: false,
+                error: "wish too long"
+            });
+        }
+
+        await db.query(
+            `
+            INSERT INTO public_assortment_wishes (
+                wish_text,
+                source,
+                status
+            )
+            VALUES (?, 'about_page', 'new')
+            `,
+            [cleanText]
+        );
+
+        return res.json({
+            ok: true
+        });
+
+    } catch (err) {
+        console.error("SAVE PUBLIC ASSORTMENT WISH ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== SAVE ASSORTMENT WISH ===================== */
 app.post("/api/assortment-wishes", async (req, res) => {
     try {
