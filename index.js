@@ -4414,6 +4414,210 @@ async function getStaffAdminToolsManagerOrDeny(staffId) {
     return getStaffUsersManagerOrDeny(staffId);
 }
 
+/* ===================== STAFF: PHYSICAL CERTIFICATES ===================== */
+
+function normalizePhysicalCertificateCode(value) {
+    return String(value ?? "")
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, "");
+}
+
+function normalizePhysicalCertificateNominal(value) {
+    const normalizedValue = String(value ?? "")
+        .trim()
+        .replace(/\s+/g, "")
+        .replace(",", ".");
+
+    const nominal = Number(normalizedValue);
+
+    if (!Number.isFinite(nominal) || nominal <= 0) {
+        return 0;
+    }
+
+    return nominal;
+}
+
+app.post("/api/staff/certificates-import", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        const certificates = Array.isArray(req.body.certificates)
+            ? req.body.certificates
+            : [];
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        if (!certificates.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Файл не містить сертифікатів"
+            });
+        }
+
+        if (certificates.length > 1000) {
+            return res.status(400).json({
+                ok: false,
+                error: "За один раз можна завантажити максимум 1000 сертифікатів"
+            });
+        }
+
+        const normalizedCertificates = certificates.map((certificate, index) => ({
+            rowNumber: index + 2,
+            code: normalizePhysicalCertificateCode(
+                certificate?.certificateCode ??
+                certificate?.code ??
+                certificate?.number
+            ),
+            nominal: normalizePhysicalCertificateNominal(
+                certificate?.nominal
+            )
+        }));
+
+        const invalidCertificate = normalizedCertificates.find(certificate =>
+            !certificate.code ||
+            certificate.code.length > 100 ||
+            certificate.nominal <= 0
+        );
+
+        if (invalidCertificate) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    `Некоректні дані в рядку ${invalidCertificate.rowNumber}. ` +
+                    `Перевірте номер сертифіката і номінал.`
+            });
+        }
+
+        const duplicateCodes = normalizedCertificates
+            .map(certificate => certificate.code)
+            .filter((code, index, array) =>
+                array.indexOf(code) !== index
+            );
+
+        if (duplicateCodes.length) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    "У файлі є дублікати номерів: " +
+                    [...new Set(duplicateCodes)].join(", ")
+            });
+        }
+
+        const codes = normalizedCertificates.map(
+            certificate => certificate.code
+        );
+
+        const placeholders = codes
+            .map(() => "?")
+            .join(",");
+
+        const [existingCertificates] = await connection.query(
+            `
+            SELECT certificate_code
+            FROM certificates
+            WHERE certificate_code IN (${placeholders})
+            `,
+            codes
+        );
+
+        if (existingCertificates.length) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    "У БД вже існують сертифікати: " +
+                    existingCertificates
+                        .map(row => row.certificate_code)
+                        .join(", ")
+            });
+        }
+
+        await connection.beginTransaction();
+
+        for (const certificate of normalizedCertificates) {
+            await connection.query(
+                `
+                INSERT INTO certificates
+                (
+                    certificate_code,
+                    owner_user_id,
+                    purchase_order_id,
+                    nominal,
+                    created_at,
+                    expires_at,
+                    used_at,
+                    status,
+                    certificate_type
+                )
+                VALUES (?, NULL, NULL, ?, NULL, NULL, NULL, NULL, ?)
+                `,
+                [
+                    certificate.code,
+                    certificate.nominal,
+                    "фізичний"
+                ]
+            );
+        }
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: `${SHEET_NAME}!A:H`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+                values: normalizedCertificates.map(certificate => [
+                    certificate.code,
+                    certificate.nominal,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "фізичний"
+                ])
+            }
+        });
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            imported: normalizedCertificates.length
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error(
+                "CERTIFICATE IMPORT ROLLBACK ERROR:",
+                rollbackErr
+            );
+        }
+
+        console.error(
+            "STAFF CERTIFICATES IMPORT ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "Не вдалося завантажити сертифікати"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 function normalizeStaffProductName(value) {
     return String(value || "")
         .trim()
