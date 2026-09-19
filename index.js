@@ -4438,6 +4438,252 @@ function normalizePhysicalCertificateNominal(value) {
     return nominal;
 }
 
+function normalizeStaffPurchasedCertificateType(value) {
+    const type = String(value || "")
+        .trim()
+        .toLowerCase();
+
+    return [
+        "електронний",
+        "фізичний"
+    ].includes(type)
+        ? type
+        : "";
+}
+
+
+async function getAvailablePhysicalCertificateForStaffSale(
+    connection,
+    {
+        certificateCode,
+        expectedNominal = 0,
+        lockForUpdate = false
+    }
+) {
+    const code =
+        normalizePhysicalCertificateCode(
+            certificateCode
+        );
+
+    if (!code) {
+        return {
+            ok: false,
+            error: "Вкажіть номер фізичного сертифіката"
+        };
+    }
+
+    const lockSql =
+        lockForUpdate
+            ? "FOR UPDATE"
+            : "";
+
+    const [rows] = await connection.query(
+        `
+        SELECT
+            id,
+            certificate_code,
+            owner_user_id,
+            purchase_order_id,
+            nominal,
+            created_at,
+            expires_at,
+            used_at,
+            status,
+            certificate_type
+        FROM certificates
+        WHERE certificate_code = ?
+          AND certificate_type = ?
+        LIMIT 1
+        ${lockSql}
+        `,
+        [
+            code,
+            "фізичний"
+        ]
+    );
+
+    if (!rows.length) {
+        return {
+            ok: false,
+            error:
+                `Фізичний сертифікат ${code} не знайдено`
+        };
+    }
+
+    const certificate = rows[0];
+
+    if (
+        String(certificate.status || "").trim() ||
+        certificate.created_at ||
+        certificate.expires_at ||
+        certificate.purchase_order_id
+    ) {
+        return {
+            ok: false,
+            error:
+                `Сертифікат ${code} вже активований ` +
+                `або недоступний для продажу`
+        };
+    }
+
+    const nominal = Number(
+        certificate.nominal || 0
+    );
+
+    if (!nominal || nominal <= 0) {
+        return {
+            ok: false,
+            error:
+                `Для сертифіката ${code} ` +
+                `не вказаний коректний номінал`
+        };
+    }
+
+    if (
+        Number(expectedNominal || 0) > 0 &&
+        nominal !== Number(expectedNominal)
+    ) {
+        return {
+            ok: false,
+            error:
+                `Сертифікат ${code} має номінал ` +
+                `${nominal} грн, а в чек додано ` +
+                `${Number(expectedNominal)} грн`
+        };
+    }
+
+    return {
+        ok: true,
+        certificate: {
+            ...certificate,
+            certificate_code: code,
+            nominal
+        }
+    };
+}
+
+
+async function activatePhysicalCertificateForStaffSale({
+    connection,
+    certificate,
+    orderId,
+    ownerUserId
+}) {
+    const createdAt = new Date();
+
+    const expiresAt = new Date(createdAt);
+    expiresAt.setMonth(
+        expiresAt.getMonth() + 3
+    );
+
+    await connection.query(
+        `
+        UPDATE certificates
+        SET
+            owner_user_id = ?,
+            purchase_order_id = ?,
+            created_at = ?,
+            expires_at = ?,
+            used_at = NULL,
+            status = 'active',
+            certificate_type = 'фізичний'
+        WHERE id = ?
+        `,
+        [
+            ownerUserId || null,
+            orderId,
+            createdAt,
+            expiresAt,
+            certificate.id
+        ]
+    );
+
+    const sheetResponse =
+        await sheets.spreadsheets.values.get({
+            spreadsheetId: SHEET_ID,
+            range: `${SHEET_NAME}!A:H`
+        });
+
+    const sheetRows =
+        sheetResponse.data.values || [];
+
+    const sheetRowIndex =
+        sheetRows.findIndex(
+            (row, index) =>
+                index > 0 &&
+                normalizePhysicalCertificateCode(
+                    row?.[0]
+                ) ===
+                normalizePhysicalCertificateCode(
+                    certificate.certificate_code
+                )
+        );
+
+    if (sheetRowIndex >= 0) {
+        await sheets.spreadsheets.values.update({
+            spreadsheetId: SHEET_ID,
+
+            range:
+                `${SHEET_NAME}!C${sheetRowIndex + 1}:` +
+                `H${sheetRowIndex + 1}`,
+
+            valueInputOption: "USER_ENTERED",
+
+            requestBody: {
+                values: [
+                    [
+                        createdAt.toISOString(),
+                        expiresAt.toISOString(),
+                        "",
+                        orderId,
+                        "active",
+                        "фізичний"
+                    ]
+                ]
+            }
+        });
+
+    } else {
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: `${SHEET_NAME}!A:H`,
+            valueInputOption: "RAW",
+
+            requestBody: {
+                values: [
+                    [
+                        String(
+                            certificate.certificate_code
+                        ),
+                        Number(
+                            certificate.nominal || 0
+                        ),
+                        createdAt.toISOString(),
+                        expiresAt.toISOString(),
+                        "",
+                        orderId,
+                        "active",
+                        "фізичний"
+                    ]
+                ]
+            }
+        });
+    }
+
+    return {
+        code:
+            certificate.certificate_code,
+
+        nominal:
+            Number(certificate.nominal || 0),
+
+        expiresAt,
+
+        certificateType:
+            "фізичний"
+    };
+}
+
 app.post("/api/staff/physical-certificate-check", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
@@ -8587,13 +8833,34 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
         }
 
         const saleItems = bodyItems.map(item => ({
-            productId: Number(item.productId || item.product_id || 0),
-            quantity: Number(item.quantity || 0),
-            discoveryAromas: Array.isArray(item.discoveryAromas)
-                ? item.discoveryAromas
-                    .map(aroma => String(aroma || "").trim())
-                    .filter(Boolean)
-                : []
+            productId:
+                Number(
+                    item.productId ||
+                    item.product_id ||
+                    0
+                ),
+
+            quantity:
+                Number(item.quantity || 0),
+
+            discoveryAromas:
+                Array.isArray(item.discoveryAromas)
+                    ? item.discoveryAromas
+                        .map(aroma =>
+                            String(aroma || "").trim()
+                        )
+                        .filter(Boolean)
+                    : [],
+
+            certificateType:
+                normalizeStaffPurchasedCertificateType(
+                    item.certificateType
+                ),
+
+            physicalCertificateCode:
+                normalizePhysicalCertificateCode(
+                    item.physicalCertificateCode
+                )
         }));
 
         if (!staffId || !saleItems.length) {
@@ -8787,22 +9054,113 @@ app.post("/api/staff/create-mono-sale", async (req, res) => {
             stock.category_slug = product.category_slug;
             stock.catalog_display_name = product.display_name;            
 
-            const unitPrice = Number(stock.retail_price || 0);
+            const unitPrice =
+                Number(
+                    stock.retail_price || 0
+                );
+
+            const certificateType =
+                isCertificateProduct
+                    ? normalizeStaffPurchasedCertificateType(
+                        saleItem.certificateType
+                    )
+                    : "";
+
+            let physicalCertificate = null;
+
+            if (
+                isCertificateProduct &&
+                !certificateType
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Для сертифіката оберіть тип: " +
+                        "електронний або фізичний"
+                });
+            }
+
+            if (
+                isCertificateProduct &&
+                certificateType === "фізичний"
+            ) {
+                if (
+                    Number(saleItem.quantity || 0) !== 1
+                ) {
+                    return res.status(400).json({
+                        ok: false,
+                        error:
+                            "Один фізичний номер відповідає " +
+                            "одному сертифікату"
+                    });
+                }
+
+                const physicalCheck =
+                    await getAvailablePhysicalCertificateForStaffSale(
+                        connection,
+                        {
+                            certificateCode:
+                                saleItem.physicalCertificateCode,
+
+                            expectedNominal:
+                                unitPrice,
+
+                            lockForUpdate:
+                                false
+                        }
+                    );
+
+                if (!physicalCheck.ok) {
+                    return res.status(400).json({
+                        ok: false,
+                        error:
+                            physicalCheck.error
+                    });
+                }
+
+                physicalCertificate =
+                    physicalCheck.certificate;
+            }
 
             saleRows.push({
                 stock,
-                quantity: saleItem.quantity,
+
+                quantity:
+                    saleItem.quantity,
+
                 currentBalance,
+
                 unitPrice,
-                rowTotal: unitPrice * saleItem.quantity,
+
+                rowTotal:
+                    unitPrice *
+                    saleItem.quantity,
+
                 isCertificateProduct,
                 isDiscoveryProduct,
                 isStockManagedProduct,
-                discoveryAromas: Array.isArray(saleItem.discoveryAromas)
-                    ? saleItem.discoveryAromas
-                        .map(aroma => String(aroma || "").trim())
-                        .filter(Boolean)
-                    : []
+
+                certificateType,
+
+                physicalCertificateCode:
+                    certificateType === "фізичний"
+                        ? normalizePhysicalCertificateCode(
+                            saleItem.physicalCertificateCode
+                        )
+                        : "",
+
+                physicalCertificate,
+
+                discoveryAromas:
+                    Array.isArray(
+                        saleItem.discoveryAromas
+                    )
+                        ? saleItem.discoveryAromas
+                            .map(aroma =>
+                                String(aroma || "").trim()
+                            )
+                            .filter(Boolean)
+                        : []
             });
         }
 
@@ -9341,19 +9699,54 @@ app.post("/api/staff/create-sale", async (req, res) => {
 
         const saleItems = bodyItems.length
             ? bodyItems.map(item => ({
-                productId: Number(item.productId || item.product_id || 0),
-                quantity: Number(item.quantity || 0),
-                discoveryAromas: Array.isArray(item.discoveryAromas)
-                    ? item.discoveryAromas
-                        .map(aroma => String(aroma || "").trim())
-                        .filter(Boolean)
-                    : []
+                productId:
+                    Number(
+                        item.productId ||
+                        item.product_id ||
+                        0
+                    ),
+
+                quantity:
+                    Number(item.quantity || 0),
+
+                discoveryAromas:
+                    Array.isArray(item.discoveryAromas)
+                        ? item.discoveryAromas
+                            .map(aroma =>
+                                String(aroma || "").trim()
+                            )
+                            .filter(Boolean)
+                        : [],
+
+                certificateType:
+                    normalizeStaffPurchasedCertificateType(
+                        item.certificateType
+                    ),
+
+                physicalCertificateCode:
+                    normalizePhysicalCertificateCode(
+                        item.physicalCertificateCode
+                    )
             }))
             : [
                 {
-                    productId: Number(req.body.productId || 0),
-                    quantity: Number(req.body.quantity || 0),
-                    discoveryAromas: []
+                    productId:
+                        Number(req.body.productId || 0),
+
+                    quantity:
+                        Number(req.body.quantity || 0),
+
+                    discoveryAromas: [],
+
+                    certificateType:
+                        normalizeStaffPurchasedCertificateType(
+                            req.body.certificateType
+                        ),
+
+                    physicalCertificateCode:
+                        normalizePhysicalCertificateCode(
+                            req.body.physicalCertificateCode
+                        )
                 }
             ];
 
@@ -9598,24 +9991,120 @@ app.post("/api/staff/create-sale", async (req, res) => {
             stock.category_slug = product.category_slug;
             stock.catalog_display_name = product.display_name;
 
-            const unitPrice = Number(stock.retail_price || 0);
+            const unitPrice =
+                Number(
+                    stock.retail_price || 0
+                );
 
-            const rowTotal = unitPrice * saleItem.quantity;
+            const rowTotal =
+                unitPrice *
+                saleItem.quantity;
+
+            const certificateType =
+                isCertificateProduct
+                    ? normalizeStaffPurchasedCertificateType(
+                        saleItem.certificateType
+                    )
+                    : "";
+
+            let physicalCertificate = null;
+
+            if (
+                isCertificateProduct &&
+                !certificateType
+            ) {
+                await connection.rollback();
+
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Для сертифіката оберіть тип: " +
+                        "електронний або фізичний"
+                });
+            }
+
+            if (
+                isCertificateProduct &&
+                certificateType === "фізичний"
+            ) {
+                if (
+                    Number(saleItem.quantity || 0) !== 1
+                ) {
+                    await connection.rollback();
+
+                    return res.status(400).json({
+                        ok: false,
+                        error:
+                            "Один фізичний номер відповідає " +
+                            "одному сертифікату"
+                    });
+                }
+
+                const physicalCheck =
+                    await getAvailablePhysicalCertificateForStaffSale(
+                        connection,
+                        {
+                            certificateCode:
+                                saleItem.physicalCertificateCode,
+
+                            expectedNominal:
+                                unitPrice,
+
+                            lockForUpdate:
+                                true
+                        }
+                    );
+
+                if (!physicalCheck.ok) {
+                    await connection.rollback();
+
+                    return res.status(400).json({
+                        ok: false,
+                        error:
+                            physicalCheck.error
+                    });
+                }
+
+                physicalCertificate =
+                    physicalCheck.certificate;
+            }
 
             saleRows.push({
                 stock,
-                quantity: saleItem.quantity,
+
+                quantity:
+                    saleItem.quantity,
+
                 currentBalance,
+
                 unitPrice,
                 rowTotal,
+
                 isCertificateProduct,
                 isDiscoveryProduct,
                 isStockManagedProduct,
-                discoveryAromas: Array.isArray(saleItem.discoveryAromas)
-                    ? saleItem.discoveryAromas
-                        .map(aroma => String(aroma || "").trim())
-                        .filter(Boolean)
-                    : []
+
+                certificateType,
+
+                physicalCertificateCode:
+                    certificateType === "фізичний"
+                        ? normalizePhysicalCertificateCode(
+                            saleItem.physicalCertificateCode
+                        )
+                        : "",
+
+                physicalCertificate,
+
+                discoveryAromas:
+                    Array.isArray(
+                        saleItem.discoveryAromas
+                    )
+                        ? saleItem.discoveryAromas
+                            .map(aroma =>
+                                String(aroma || "").trim()
+                            )
+                            .filter(Boolean)
+                        : []
             });
         }
 
@@ -10792,29 +11281,95 @@ app.post("/api/staff/create-sale", async (req, res) => {
         );
 
         for (const row of saleRows) {
-            const productKey = String(row.stock.product_key || "").toLowerCase();
-            const productName = String(row.stock.product_display_name || "").toLowerCase();
+            const productKey =
+                String(
+                    row.stock.product_key || ""
+                ).toLowerCase();
+
+            const productName =
+                String(
+                    row.stock.product_display_name || ""
+                ).toLowerCase();
 
             const isPurchasedCertificate =
                 productKey.startsWith("certificate_") ||
                 productName.includes("сертифікат");
 
-            if (!isPurchasedCertificate) continue;
+            if (!isPurchasedCertificate) {
+                continue;
+            }
 
-            const nominal = Number(row.unitPrice || row.stock.retail_price || 0);
+            const nominal =
+                Number(
+                    row.unitPrice ||
+                    row.stock.retail_price ||
+                    0
+                );
 
-            if (!nominal || nominal <= 0) continue;
+            if (!nominal || nominal <= 0) {
+                continue;
+            }
 
-            for (let i = 0; i < Number(row.quantity || 0); i++) {
-                const createdCertificate = await createPurchasedCertificate({
-                    connection,
-                    orderId,
-                    ownerUserId: customer ? customer.id : null,
-                    nominal,
-                    certificateType: "фізичний"
-                });
+            const certificateType =
+                normalizeStaffPurchasedCertificateType(
+                    row.certificateType
+                );
 
-                purchasedCertificates.push(createdCertificate);
+            if (
+                certificateType === "фізичний"
+            ) {
+                if (!row.physicalCertificate) {
+                    throw new Error(
+                        "Physical certificate was not loaded"
+                    );
+                }
+
+                const activatedCertificate =
+                    await activatePhysicalCertificateForStaffSale({
+                        connection,
+
+                        certificate:
+                            row.physicalCertificate,
+
+                        orderId,
+
+                        ownerUserId:
+                            customer
+                                ? customer.id
+                                : null
+                    });
+
+                purchasedCertificates.push(
+                    activatedCertificate
+                );
+
+                continue;
+            }
+
+            for (
+                let i = 0;
+                i < Number(row.quantity || 0);
+                i++
+            ) {
+                const createdCertificate =
+                    await createPurchasedCertificate({
+                        connection,
+                        orderId,
+
+                        ownerUserId:
+                            customer
+                                ? customer.id
+                                : null,
+
+                        nominal,
+
+                        certificateType:
+                            "електронний"
+                    });
+
+                purchasedCertificates.push(
+                    createdCertificate
+                );
             }
         }
 
