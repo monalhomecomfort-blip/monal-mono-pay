@@ -4800,7 +4800,11 @@ app.post("/api/staff/certificate-activate", async (req, res) => {
 
         const [orderRows] = await connection.query(
             `
-            SELECT user_id
+            SELECT
+                order_id,
+                user_id,
+                source,
+                items_text
             FROM orders
             WHERE order_id = ?
             LIMIT 1
@@ -4808,8 +4812,16 @@ app.post("/api/staff/certificate-activate", async (req, res) => {
             [orderId]
         );
 
+        if (!orderRows.length) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error: "Онлайн-замовлення з таким номером не знайдено"
+            });
+        }
+
         if (
-            orderRows.length &&
             Number(orderRows[0].user_id || 0) > 0
         ) {
             ownerUserId = Number(
