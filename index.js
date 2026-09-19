@@ -4438,6 +4438,124 @@ function normalizePhysicalCertificateNominal(value) {
     return nominal;
 }
 
+app.post("/api/staff/physical-certificate-check", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        const certificateCode =
+            normalizePhysicalCertificateCode(
+                req.body.certificateCode
+            );
+
+        if (!staffId || !certificateCode) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть номер сертифіката"
+            });
+        }
+
+        const [staffRows] = await db.query(
+            `
+            SELECT
+                id,
+                role,
+                is_active
+            FROM staff_users
+            WHERE id = ?
+              AND is_active = 1
+            LIMIT 1
+            `,
+            [staffId]
+        );
+
+        if (!staffRows.length) {
+            return res.status(403).json({
+                ok: false,
+                error: "staff access denied"
+            });
+        }
+
+        const role = String(
+            staffRows[0].role || ""
+        ).trim();
+
+        if (
+            !["admin", "manager", "partner"].includes(role)
+        ) {
+            return res.status(403).json({
+                ok: false,
+                error: "Недостатньо прав"
+            });
+        }
+
+        const [certificateRows] = await db.query(
+            `
+            SELECT
+                id,
+                certificate_code,
+                nominal,
+                created_at,
+                expires_at,
+                status,
+                purchase_order_id,
+                certificate_type
+            FROM certificates
+            WHERE certificate_code = ?
+              AND certificate_type = ?
+            LIMIT 1
+            `,
+            [
+                certificateCode,
+                "фізичний"
+            ]
+        );
+
+        if (!certificateRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Фізичний сертифікат з таким номером не знайдено"
+            });
+        }
+
+        const certificate = certificateRows[0];
+
+        if (
+            certificate.status ||
+            certificate.created_at ||
+            certificate.expires_at ||
+            certificate.purchase_order_id
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    `Сертифікат ${certificateCode} ` +
+                    `вже активований або недоступний для продажу`
+            });
+        }
+
+        return res.json({
+            ok: true,
+            certificate: {
+                code: certificate.certificate_code,
+                nominal: Number(
+                    certificate.nominal || 0
+                )
+            }
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF PHYSICAL CERTIFICATE CHECK ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "Не вдалося перевірити сертифікат"
+        });
+    }
+});
+
 app.post("/api/staff/certificates-import", async (req, res) => {
     const connection = await db.getConnection();
 
