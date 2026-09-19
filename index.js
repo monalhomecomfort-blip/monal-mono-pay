@@ -4477,8 +4477,74 @@ async function getStaffAdminToolsManagerOrDeny(staffId) {
     return getStaffUsersManagerOrDeny(staffId);
 }
 
-/* ===================== STAFF: PHYSICAL CERTIFICATES ===================== */
+/* ===================== STAFF: CUSTOMER WISHES ===================== */
 
+app.post("/api/staff/customer-wishes", async (req, res) => {
+    try {
+        const staffId = Number(req.body?.staffId || 0);
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const [rows] = await db.query(
+            `
+            SELECT
+                CONCAT('personal-', aw.id) AS record_key,
+                aw.id AS wish_id,
+                'personal' AS wish_type,
+                aw.user_id,
+                c.name AS customer_name,
+                c.email AS customer_email,
+                aw.wish_text,
+                aw.status,
+                aw.created_at
+            FROM assortment_wishes aw
+            LEFT JOIN customers c
+                ON c.id = aw.user_id
+
+            UNION ALL
+
+            SELECT
+                CONCAT('public-', paw.id) AS record_key,
+                paw.id AS wish_id,
+                'public' AS wish_type,
+                paw.user_id,
+                c.name AS customer_name,
+                c.email AS customer_email,
+                paw.wish_text,
+                paw.status,
+                paw.created_at
+            FROM public_assortment_wishes paw
+            LEFT JOIN customers c
+                ON c.id = paw.user_id
+
+            ORDER BY created_at DESC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            wishes: rows
+        });
+
+    } catch (err) {
+        console.error("STAFF CUSTOMER WISHES ERROR:", err);
+
+        return res.status(500).json({
+            ok: false,
+            wishes: [],
+            error: "server error"
+        });
+    }
+});
+
+/* ===================== STAFF: PHYSICAL CERTIFICATES ===================== */
 function normalizePhysicalCertificateCode(value) {
     return String(value ?? "")
         .trim()
