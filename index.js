@@ -4544,6 +4544,101 @@ app.post("/api/staff/customer-wishes", async (req, res) => {
     }
 });
 
+app.post("/api/staff/delete-customer-wishes", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body?.staffId || 0);
+
+        const records = Array.isArray(req.body?.records)
+            ? req.body.records
+            : [];
+
+        const access = await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const normalizedRecords = records
+            .map(record => ({
+                type: String(record?.type || "").trim().toLowerCase(),
+                id: Number(record?.id || 0)
+            }))
+            .filter(record =>
+                (
+                    record.type === "public" ||
+                    record.type === "personal"
+                ) &&
+                record.id > 0
+            );
+
+        if (!normalizedRecords.length) {
+            return res.status(400).json({
+                ok: false,
+                error: "Не обрано побажань для видалення"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        for (const record of normalizedRecords) {
+            if (record.type === "public") {
+                await connection.query(
+                    `
+                    DELETE FROM public_assortment_wishes
+                    WHERE id = ?
+                    `,
+                    [record.id]
+                );
+            }
+
+            if (record.type === "personal") {
+                await connection.query(
+                    `
+                    DELETE FROM assortment_wishes
+                    WHERE id = ?
+                    `,
+                    [record.id]
+                );
+            }
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            deleted: normalizedRecords.length
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error(
+                "DELETE CUSTOMER WISHES ROLLBACK ERROR:",
+                rollbackErr
+            );
+        }
+
+        console.error(
+            "DELETE CUSTOMER WISHES ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 /* ===================== STAFF: PHYSICAL CERTIFICATES ===================== */
 function normalizePhysicalCertificateCode(value) {
     return String(value ?? "")
