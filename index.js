@@ -4618,6 +4618,334 @@ app.post("/api/staff/certificates-import", async (req, res) => {
     }
 });
 
+app.post("/api/staff/certificates-available", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        const search = normalizePhysicalCertificateCode(
+            req.body.search
+        );
+
+        const nominal = normalizePhysicalCertificateNominal(
+            req.body.nominal
+        );
+
+        const access = await getAdminStaffOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const where = [
+            "certificate_type = ?",
+            "(status IS NULL OR status = '')",
+            "purchase_order_id IS NULL",
+            "created_at IS NULL",
+            "expires_at IS NULL"
+        ];
+
+        const values = [
+            "фізичний"
+        ];
+
+        if (search) {
+            where.push("certificate_code LIKE ?");
+            values.push(`%${search}%`);
+        }
+
+        if (nominal > 0) {
+            where.push("nominal = ?");
+            values.push(nominal);
+        }
+
+        const [certificates] = await db.query(
+            `
+            SELECT
+                id,
+                certificate_code,
+                nominal,
+                created_at,
+                expires_at,
+                status,
+                purchase_order_id,
+                certificate_type
+            FROM certificates
+            WHERE ${where.join(" AND ")}
+            ORDER BY certificate_code ASC
+            `,
+            values
+        );
+
+        return res.json({
+            ok: true,
+            certificates
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF CERTIFICATES AVAILABLE ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            certificates: [],
+            error: "Не вдалося завантажити сертифікати"
+        });
+    }
+});
+
+
+app.post("/api/staff/certificate-activate", async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        const certificateCode = normalizePhysicalCertificateCode(
+            req.body.certificateCode
+        );
+
+        const orderId = String(
+            req.body.orderId || ""
+        ).trim();
+
+        const access = await getAdminStaffOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        if (!certificateCode) {
+            return res.status(400).json({
+                ok: false,
+                error: "Не передано номер сертифіката"
+            });
+        }
+
+        if (!orderId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Вкажіть № онлайн-замовлення"
+            });
+        }
+
+        await connection.beginTransaction();
+
+        const [certificateRows] = await connection.query(
+            `
+            SELECT
+                id,
+                certificate_code,
+                owner_user_id,
+                nominal,
+                created_at,
+                expires_at,
+                status,
+                purchase_order_id,
+                certificate_type
+            FROM certificates
+            WHERE certificate_code = ?
+              AND certificate_type = ?
+            LIMIT 1
+            FOR UPDATE
+            `,
+            [
+                certificateCode,
+                "фізичний"
+            ]
+        );
+
+        if (!certificateRows.length) {
+            await connection.rollback();
+
+            return res.status(404).json({
+                ok: false,
+                error: "Фізичний сертифікат не знайдено"
+            });
+        }
+
+        const certificate = certificateRows[0];
+
+        if (
+            certificate.status === "active" ||
+            certificate.created_at ||
+            certificate.expires_at ||
+            certificate.purchase_order_id
+        ) {
+            await connection.rollback();
+
+            return res.status(400).json({
+                ok: false,
+                error:
+                    `Сертифікат ${certificateCode} ` +
+                    `вже активований`
+            });
+        }
+
+        const createdAt = new Date();
+
+        const expiresAt = new Date(createdAt);
+        expiresAt.setMonth(
+            expiresAt.getMonth() + 3
+        );
+
+        let ownerUserId = null;
+
+        const [orderRows] = await connection.query(
+            `
+            SELECT user_id
+            FROM orders
+            WHERE order_id = ?
+            LIMIT 1
+            `,
+            [orderId]
+        );
+
+        if (
+            orderRows.length &&
+            Number(orderRows[0].user_id || 0) > 0
+        ) {
+            ownerUserId = Number(
+                orderRows[0].user_id
+            );
+        }
+
+        await connection.query(
+            `
+            UPDATE certificates
+            SET
+                owner_user_id = COALESCE(?, owner_user_id),
+                purchase_order_id = ?,
+                created_at = ?,
+                expires_at = ?,
+                used_at = NULL,
+                status = ?,
+                certificate_type = ?
+            WHERE id = ?
+            `,
+            [
+                ownerUserId,
+                orderId,
+                createdAt,
+                expiresAt,
+                "active",
+                "фізичний",
+                certificate.id
+            ]
+        );
+
+        const sheetResponse =
+            await sheets.spreadsheets.values.get({
+                spreadsheetId: SHEET_ID,
+                range: `${SHEET_NAME}!A:H`
+            });
+
+        const sheetRows =
+            sheetResponse.data.values || [];
+
+        const sheetRowIndex = sheetRows.findIndex(
+            (row, index) =>
+                index > 0 &&
+                normalizePhysicalCertificateCode(
+                    row?.[0]
+                ) === certificateCode
+        );
+
+        if (sheetRowIndex >= 0) {
+            await sheets.spreadsheets.values.update({
+                spreadsheetId: SHEET_ID,
+                range:
+                    `${SHEET_NAME}!C${sheetRowIndex + 1}:` +
+                    `H${sheetRowIndex + 1}`,
+                valueInputOption: "USER_ENTERED",
+                requestBody: {
+                    values: [
+                        [
+                            createdAt.toISOString(),
+                            expiresAt.toISOString(),
+                            "",
+                            orderId,
+                            "active",
+                            "фізичний"
+                        ]
+                    ]
+                }
+            });
+
+        } else {
+            await sheets.spreadsheets.values.append({
+                spreadsheetId: SHEET_ID,
+                range: `${SHEET_NAME}!A:H`,
+                valueInputOption: "RAW",
+                requestBody: {
+                    values: [
+                        [
+                            certificateCode,
+                            Number(
+                                certificate.nominal || 0
+                            ),
+                            createdAt.toISOString(),
+                            expiresAt.toISOString(),
+                            "",
+                            orderId,
+                            "active",
+                            "фізичний"
+                        ]
+                    ]
+                }
+            });
+        }
+
+        await connection.commit();
+
+        return res.json({
+            ok: true,
+            certificate: {
+                code: certificateCode,
+                nominal: Number(
+                    certificate.nominal || 0
+                ),
+                orderId,
+                createdAt:
+                    createdAt.toISOString(),
+                expiresAt:
+                    expiresAt.toISOString(),
+                status: "active"
+            }
+        });
+
+    } catch (err) {
+        try {
+            await connection.rollback();
+        } catch (rollbackErr) {
+            console.error(
+                "CERTIFICATE ACTIVATE ROLLBACK ERROR:",
+                rollbackErr
+            );
+        }
+
+        console.error(
+            "STAFF CERTIFICATE ACTIVATE ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "Не вдалося активувати сертифікат"
+        });
+
+    } finally {
+        connection.release();
+    }
+});
+
 function normalizeStaffProductName(value) {
     return String(value || "")
         .trim()
