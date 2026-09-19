@@ -4571,11 +4571,11 @@ app.post("/api/staff/certificates-import", async (req, res) => {
         await sheets.spreadsheets.values.append({
             spreadsheetId: SHEET_ID,
             range: `${SHEET_NAME}!A:H`,
-            valueInputOption: "USER_ENTERED",
+            valueInputOption: "RAW",
             requestBody: {
                 values: normalizedCertificates.map(certificate => [
-                    certificate.code,
-                    certificate.nominal,
+                    String(certificate.code),
+                    Number(certificate.nominal),
                     "",
                     "",
                     "",
