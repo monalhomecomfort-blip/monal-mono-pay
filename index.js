@@ -1045,8 +1045,11 @@ app.get("/api/reviews/approved", async (req, res) => {
 /* ===================== SAVE PUBLIC ASSORTMENT WISH ===================== */
 app.post("/api/public-assortment-wishes", async (req, res) => {
     try {
-        const { wish_text } = req.body || {};
-
+        const {
+            wish_text,
+            user_id
+        } = req.body || {};
+        
         const cleanText = String(wish_text || "").trim();
 
         if (!cleanText) {
@@ -1070,16 +1073,22 @@ app.post("/api/public-assortment-wishes", async (req, res) => {
             });
         }
 
+        const userId = Number(user_id || 0) || null;
+
         await db.query(
             `
             INSERT INTO public_assortment_wishes (
+                user_id,
                 wish_text,
                 source,
                 status
             )
-            VALUES (?, 'about_page', 'new')
+            VALUES (?, ?, 'about_page', 'new')
             `,
-            [cleanText]
+            [
+                userId,
+                cleanText
+            ]
         );
 
         return res.json({
