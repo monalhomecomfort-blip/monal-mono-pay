@@ -4477,6 +4477,974 @@ async function getStaffAdminToolsManagerOrDeny(staffId) {
     return getStaffUsersManagerOrDeny(staffId);
 }
 
+/* ===================== STAFF: NOTEBOOK / TASKS ===================== */
+
+async function getActiveStaffOrDeny(staffId) {
+    const [staffRows] = await db.query(
+        `
+        SELECT
+            id,
+            name,
+            role,
+            warehouse_id,
+            is_active
+        FROM staff_users
+        WHERE id = ?
+          AND is_active = 1
+        LIMIT 1
+        `,
+        [staffId]
+    );
+
+    if (!staffRows.length) {
+        return {
+            ok: false,
+            status: 403,
+            error: "staff access denied"
+        };
+    }
+
+    return {
+        ok: true,
+        staff: staffRows[0]
+    };
+}
+
+
+function getKyivDateParts() {
+    const formatter = new Intl.DateTimeFormat(
+        "en-CA",
+        {
+            timeZone: "Europe/Kyiv",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            weekday: "short"
+        }
+    );
+
+    const parts = formatter.formatToParts(new Date());
+
+    const values = {};
+
+    parts.forEach(part => {
+        values[part.type] = part.value;
+    });
+
+    const weekDayMap = {
+        Mon: 1,
+        Tue: 2,
+        Wed: 3,
+        Thu: 4,
+        Fri: 5,
+        Sat: 6,
+        Sun: 7
+    };
+
+    return {
+        date:
+            `${values.year}-${values.month}-${values.day}`,
+
+        dayOfMonth:
+            Number(values.day),
+
+        weekDay:
+            Number(weekDayMap[values.weekday] || 0)
+    };
+}
+
+
+function staffTaskRunsToday(
+    task,
+    kyivDateParts
+) {
+    const frequencyType =
+        String(task.frequency_type || "")
+            .trim()
+            .toLowerCase();
+
+    if (frequencyType === "daily") {
+        return true;
+    }
+
+    if (frequencyType === "weekdays") {
+        return (
+            kyivDateParts.weekDay >= 1 &&
+            kyivDateParts.weekDay <= 5
+        );
+    }
+
+    if (frequencyType === "weekly") {
+        return (
+            Number(task.week_day || 0) ===
+            kyivDateParts.weekDay
+        );
+    }
+
+    if (frequencyType === "monthly") {
+        return (
+            Number(task.month_day || 0) ===
+            kyivDateParts.dayOfMonth
+        );
+    }
+
+    return false;
+}
+
+
+function staffTaskMatchesUser(
+    task,
+    staff
+) {
+    const targetStaffUserId =
+        Number(task.target_staff_user_id || 0);
+
+    if (
+        targetStaffUserId > 0 &&
+        targetStaffUserId === Number(staff.id)
+    ) {
+        return true;
+    }
+
+    let targetRoles = [];
+
+    if (Array.isArray(task.target_roles)) {
+        targetRoles = task.target_roles;
+
+    } else if (task.target_roles) {
+        try {
+            targetRoles =
+                JSON.parse(task.target_roles);
+        } catch (error) {
+            targetRoles = [];
+        }
+    }
+
+    return targetRoles
+        .map(role =>
+            String(role || "")
+                .trim()
+                .toLowerCase()
+        )
+        .includes(
+            String(staff.role || "")
+                .trim()
+                .toLowerCase()
+        );
+}
+
+
+/* ===================== STAFF: NOTEBOOK DATA ===================== */
+
+app.post("/api/staff/notebook-data", async (req, res) => {
+    try {
+        const staffId =
+            Number(req.body?.staffId || 0);
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        const access =
+            await getActiveStaffOrDeny(staffId);
+
+        if (!access.ok) {
+            return res
+                .status(access.status)
+                .json({
+                    ok: false,
+                    error: access.error
+                });
+        }
+
+        const staff = access.staff;
+
+        const kyivDateParts =
+            getKyivDateParts();
+
+        const [taskRows] = await db.query(
+            `
+            SELECT
+                id,
+                title,
+                frequency_type,
+                week_day,
+                month_day,
+                target_roles,
+                target_staff_user_id
+            FROM staff_task_templates
+            WHERE is_active = 1
+            ORDER BY id ASC
+            `
+        );
+
+        const todayTasks =
+            taskRows.filter(task =>
+                staffTaskRunsToday(
+                    task,
+                    kyivDateParts
+                ) &&
+                staffTaskMatchesUser(
+                    task,
+                    staff
+                )
+            );
+
+        let completedTaskIds = [];
+
+        if (todayTasks.length) {
+            const taskIds =
+                todayTasks.map(task =>
+                    Number(task.id)
+                );
+
+            const placeholders =
+                taskIds
+                    .map(() => "?")
+                    .join(", ");
+
+            const [completionRows] =
+                await db.query(
+                    `
+                    SELECT task_id
+                    FROM staff_task_completions
+                    WHERE staff_user_id = ?
+                      AND task_date = ?
+                      AND task_id IN (${placeholders})
+                    `,
+                    [
+                        staffId,
+                        kyivDateParts.date,
+                        ...taskIds
+                    ]
+                );
+
+            completedTaskIds =
+                completionRows.map(row =>
+                    Number(row.task_id)
+                );
+        }
+
+        const visibleTodayTasks =
+            todayTasks
+                .filter(task =>
+                    !completedTaskIds.includes(
+                        Number(task.id)
+                    )
+                )
+                .map(task => ({
+                    id: Number(task.id),
+                    title: task.title,
+                    frequency_type:
+                        task.frequency_type
+                }));
+
+        const [noteRows] = await db.query(
+            `
+            SELECT
+                id,
+                note_type,
+                note_text,
+                created_at
+            FROM staff_notes
+            WHERE staff_user_id = ?
+              AND is_active = 1
+              AND note_type IN ('idea', 'other')
+            ORDER BY created_at DESC, id DESC
+            `,
+            [staffId]
+        );
+
+        return res.json({
+            ok: true,
+
+            todayDate:
+                kyivDateParts.date,
+
+            todayTasks:
+                visibleTodayTasks,
+
+            notes:
+                noteRows
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF NOTEBOOK DATA ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            todayTasks: [],
+            notes: [],
+            error: "server error"
+        });
+    }
+});
+
+
+/* ===================== STAFF: COMPLETE TODAY TASK ===================== */
+
+app.post("/api/staff/complete-task", async (req, res) => {
+    try {
+        const staffId =
+            Number(req.body?.staffId || 0);
+
+        const taskId =
+            Number(req.body?.taskId || 0);
+
+        if (!staffId || !taskId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректне завдання"
+            });
+        }
+
+        const access =
+            await getActiveStaffOrDeny(staffId);
+
+        if (!access.ok) {
+            return res
+                .status(access.status)
+                .json({
+                    ok: false,
+                    error: access.error
+                });
+        }
+
+        const staff = access.staff;
+
+        const kyivDateParts =
+            getKyivDateParts();
+
+        const [taskRows] = await db.query(
+            `
+            SELECT
+                id,
+                title,
+                frequency_type,
+                week_day,
+                month_day,
+                target_roles,
+                target_staff_user_id,
+                is_active
+            FROM staff_task_templates
+            WHERE id = ?
+              AND is_active = 1
+            LIMIT 1
+            `,
+            [taskId]
+        );
+
+        if (!taskRows.length) {
+            return res.status(404).json({
+                ok: false,
+                error: "Завдання не знайдено"
+            });
+        }
+
+        const task = taskRows[0];
+
+        if (
+            !staffTaskRunsToday(
+                task,
+                kyivDateParts
+            ) ||
+            !staffTaskMatchesUser(
+                task,
+                staff
+            )
+        ) {
+            return res.status(403).json({
+                ok: false,
+                error:
+                    "Це завдання не призначене цьому користувачу на сьогодні"
+            });
+        }
+
+        await db.query(
+            `
+            INSERT IGNORE INTO staff_task_completions (
+                task_id,
+                staff_user_id,
+                task_date
+            )
+            VALUES (?, ?, ?)
+            `,
+            [
+                taskId,
+                staffId,
+                kyivDateParts.date
+            ]
+        );
+
+        return res.json({
+            ok: true
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF COMPLETE TASK ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+
+/* ===================== STAFF: CREATE NOTE ===================== */
+
+app.post("/api/staff/create-note", async (req, res) => {
+    try {
+        const staffId =
+            Number(req.body?.staffId || 0);
+
+        const noteType =
+            String(
+                req.body?.noteType || ""
+            )
+                .trim()
+                .toLowerCase();
+
+        const noteText =
+            String(
+                req.body?.noteText || ""
+            )
+                .trim();
+
+        if (!staffId) {
+            return res.status(400).json({
+                ok: false,
+                error: "missing staffId"
+            });
+        }
+
+        if (
+            !["idea", "other"].includes(
+                noteType
+            )
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректний тип нотатки"
+            });
+        }
+
+        if (!noteText) {
+            return res.status(400).json({
+                ok: false,
+                error: "Введіть текст нотатки"
+            });
+        }
+
+        if (noteText.length > 2000) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    "Нотатка занадто довга"
+            });
+        }
+
+        const access =
+            await getActiveStaffOrDeny(staffId);
+
+        if (!access.ok) {
+            return res
+                .status(access.status)
+                .json({
+                    ok: false,
+                    error: access.error
+                });
+        }
+
+        const [result] = await db.query(
+            `
+            INSERT INTO staff_notes (
+                staff_user_id,
+                note_type,
+                note_text,
+                is_active
+            )
+            VALUES (?, ?, ?, 1)
+            `,
+            [
+                staffId,
+                noteType,
+                noteText
+            ]
+        );
+
+        return res.json({
+            ok: true,
+            noteId: result.insertId
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF CREATE NOTE ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+
+/* ===================== STAFF: COMPLETE NOTE ===================== */
+
+app.post("/api/staff/complete-note", async (req, res) => {
+    try {
+        const staffId =
+            Number(req.body?.staffId || 0);
+
+        const noteId =
+            Number(req.body?.noteId || 0);
+
+        if (!staffId || !noteId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректна нотатка"
+            });
+        }
+
+        const access =
+            await getActiveStaffOrDeny(staffId);
+
+        if (!access.ok) {
+            return res
+                .status(access.status)
+                .json({
+                    ok: false,
+                    error: access.error
+                });
+        }
+
+        const [result] = await db.query(
+            `
+            UPDATE staff_notes
+            SET
+                is_active = 0,
+                completed_at = NOW()
+            WHERE id = ?
+              AND staff_user_id = ?
+              AND is_active = 1
+            `,
+            [
+                noteId,
+                staffId
+            ]
+        );
+
+        if (!result.affectedRows) {
+            return res.status(404).json({
+                ok: false,
+                error:
+                    "Активну нотатку не знайдено"
+            });
+        }
+
+        return res.json({
+            ok: true
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF COMPLETE NOTE ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+
+/* ===================== STAFF: TASK ASSIGNMENT DATA ===================== */
+
+app.post("/api/staff/task-assignment-data", async (req, res) => {
+    try {
+        const staffId =
+            Number(req.body?.staffId || 0);
+
+        const access =
+            await getStaffAdminToolsManagerOrDeny(
+                staffId
+            );
+
+        if (!access.ok) {
+            return res
+                .status(access.status)
+                .json({
+                    ok: false,
+                    error: access.error
+                });
+        }
+
+        const [staffUsers] = await db.query(
+            `
+            SELECT
+                id,
+                name,
+                role
+            FROM staff_users
+            WHERE is_active = 1
+            ORDER BY
+                role ASC,
+                name ASC,
+                id ASC
+            `
+        );
+
+        const [tasks] = await db.query(
+            `
+            SELECT
+                stt.id,
+                stt.title,
+                stt.frequency_type,
+                stt.week_day,
+                stt.month_day,
+                stt.target_roles,
+                stt.target_staff_user_id,
+                stt.is_active,
+                stt.created_at,
+                su.name AS target_staff_user_name
+            FROM staff_task_templates stt
+            LEFT JOIN staff_users su
+                ON su.id =
+                    stt.target_staff_user_id
+            ORDER BY
+                stt.is_active DESC,
+                stt.id DESC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            staffUsers,
+            tasks
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF TASK ASSIGNMENT DATA ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            staffUsers: [],
+            tasks: [],
+            error: "server error"
+        });
+    }
+});
+
+
+/* ===================== STAFF: CREATE TASK TEMPLATE ===================== */
+
+app.post("/api/staff/create-task-template", async (req, res) => {
+    try {
+        const staffId =
+            Number(req.body?.staffId || 0);
+
+        const title =
+            String(req.body?.title || "")
+                .trim();
+
+        const frequencyType =
+            String(
+                req.body?.frequencyType || ""
+            )
+                .trim()
+                .toLowerCase();
+
+        const targetRoles =
+            Array.isArray(
+                req.body?.targetRoles
+            )
+                ? req.body.targetRoles
+                    .map(role =>
+                        String(role || "")
+                            .trim()
+                            .toLowerCase()
+                    )
+                    .filter(role =>
+                        [
+                            "admin",
+                            "manager",
+                            "partner"
+                        ].includes(role)
+                    )
+                : [];
+
+        const targetStaffUserId =
+            Number(
+                req.body?.targetStaffUserId ||
+                0
+            ) || null;
+
+        let weekDay =
+            Number(
+                req.body?.weekDay || 0
+            ) || null;
+
+        let monthDay =
+            Number(
+                req.body?.monthDay || 0
+            ) || null;
+
+        const access =
+            await getStaffAdminToolsManagerOrDeny(
+                staffId
+            );
+
+        if (!access.ok) {
+            return res
+                .status(access.status)
+                .json({
+                    ok: false,
+                    error: access.error
+                });
+        }
+
+        if (!title) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    "Введіть назву завдання"
+            });
+        }
+
+        if (title.length > 500) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    "Назва завдання занадто довга"
+            });
+        }
+
+        if (
+            ![
+                "daily",
+                "weekdays",
+                "weekly",
+                "monthly"
+            ].includes(
+                frequencyType
+            )
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    "Некоректна періодичність"
+            });
+        }
+
+        if (
+            !targetRoles.length &&
+            !targetStaffUserId
+        ) {
+            return res.status(400).json({
+                ok: false,
+                error:
+                    "Оберіть хоча б одну роль або конкретного Staff user"
+            });
+        }
+
+        if (frequencyType === "weekly") {
+            if (
+                !weekDay ||
+                weekDay < 1 ||
+                weekDay > 7
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Оберіть день тижня"
+                });
+            }
+
+            monthDay = null;
+
+        } else if (
+            frequencyType === "monthly"
+        ) {
+            if (
+                !monthDay ||
+                monthDay < 1 ||
+                monthDay > 31
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Оберіть день місяця"
+                });
+            }
+
+            weekDay = null;
+
+        } else {
+            weekDay = null;
+            monthDay = null;
+        }
+
+        if (targetStaffUserId) {
+            const [targetStaffRows] =
+                await db.query(
+                    `
+                    SELECT id
+                    FROM staff_users
+                    WHERE id = ?
+                      AND is_active = 1
+                    LIMIT 1
+                    `,
+                    [targetStaffUserId]
+                );
+
+            if (!targetStaffRows.length) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Staff user не знайдений або неактивний"
+                });
+            }
+        }
+
+        const uniqueTargetRoles =
+            [...new Set(targetRoles)];
+
+        const [result] = await db.query(
+            `
+            INSERT INTO staff_task_templates (
+                title,
+                frequency_type,
+                week_day,
+                month_day,
+                target_roles,
+                target_staff_user_id,
+                is_active,
+                created_by_staff_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            `,
+            [
+                title,
+                frequencyType,
+                weekDay,
+                monthDay,
+                JSON.stringify(
+                    uniqueTargetRoles
+                ),
+                targetStaffUserId,
+                staffId
+            ]
+        );
+
+        return res.json({
+            ok: true,
+            taskId: result.insertId
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF CREATE TASK TEMPLATE ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
+
+/* ===================== STAFF: TASK TEMPLATE STATUS ===================== */
+
+app.post("/api/staff/task-template-status", async (req, res) => {
+    try {
+        const staffId =
+            Number(req.body?.staffId || 0);
+
+        const taskId =
+            Number(req.body?.taskId || 0);
+
+        const isActive =
+            Number(req.body?.isActive) === 1
+                ? 1
+                : 0;
+
+        const access =
+            await getStaffAdminToolsManagerOrDeny(
+                staffId
+            );
+
+        if (!access.ok) {
+            return res
+                .status(access.status)
+                .json({
+                    ok: false,
+                    error: access.error
+                });
+        }
+
+        if (!taskId) {
+            return res.status(400).json({
+                ok: false,
+                error: "Некоректне завдання"
+            });
+        }
+
+        const [result] = await db.query(
+            `
+            UPDATE staff_task_templates
+            SET is_active = ?
+            WHERE id = ?
+            `,
+            [
+                isActive,
+                taskId
+            ]
+        );
+
+        if (!result.affectedRows) {
+            return res.status(404).json({
+                ok: false,
+                error:
+                    "Завдання не знайдено"
+            });
+        }
+
+        return res.json({
+            ok: true
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF TASK TEMPLATE STATUS ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "server error"
+        });
+    }
+});
+
 /* ===================== STAFF: CUSTOMER WISHES ===================== */
 
 app.post("/api/staff/customer-wishes", async (req, res) => {
