@@ -9281,6 +9281,1149 @@ app.post("/api/staff/site-catalog-categories", async (req, res) => {
     }
 });
 
+function getSiteCatalogProductTypeSlug(categorySlug) {
+    const slug = String(categorySlug || "")
+        .trim()
+        .toLowerCase();
+
+    const map = {
+        parfums: "parfum",
+        aromadiffusers: "diffuser",
+        refills: "refill",
+        discovery: "discovery",
+        candles: "candle",
+        certificates: "certificate",
+        "gift-sets": "gift-set",
+        "car-sachets": "car-sachet",
+        "wardrobe-sachets": "wardrobe-sachet",
+        "hand-soap": "hand-soap",
+        "hand-cream": "hand-cream",
+        "shower-gel": "shower-gel"
+    };
+
+    return map[slug] || slug;
+}
+
+
+function buildSiteCatalogProductKeys({
+    categorySlug,
+    displayName,
+    aromaSlug,
+    volumeValue,
+    volumeUnit
+}) {
+    const basePart = slugifyStaffProductPart(
+        aromaSlug || displayName
+    )
+        .replace(/_/g, "-");
+
+    const typePart = slugifyStaffProductPart(
+        getSiteCatalogProductTypeSlug(categorySlug)
+    )
+        .replace(/_/g, "-");
+
+    const productGroupKey = [
+        basePart,
+        typePart
+    ]
+        .filter(Boolean)
+        .join("-");
+
+    const normalizedVolume = Number(volumeValue || 0);
+
+    const unitPart = slugifyStaffProductPart(
+        volumeUnit
+    )
+        .replace(/_/g, "-");
+
+    let volumePart = "";
+
+    if (
+        Number.isFinite(normalizedVolume) &&
+        normalizedVolume > 0
+    ) {
+        volumePart = String(normalizedVolume);
+
+        if (
+            unitPart &&
+            unitPart !== "ml"
+        ) {
+            volumePart += `-${unitPart}`;
+        }
+    }
+
+    const productKey = [
+        productGroupKey,
+        volumePart
+    ]
+        .filter(Boolean)
+        .join("-");
+
+    return {
+        productKey,
+        productGroupKey
+    };
+}
+
+
+/* ===================== STAFF: SITE CATALOG FORM DATA ===================== */
+
+app.post(
+    "/api/staff/site-catalog-form-data",
+    async (req, res) => {
+        try {
+            const staffId = Number(
+                req.body.staffId || 0
+            );
+
+            const categoryId = Number(
+                req.body.categoryId || 0
+            );
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res.status(access.status).json({
+                    ok: false,
+                    error: access.error
+                });
+            }
+
+            if (!categoryId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Не передано категорію"
+                });
+            }
+
+            const [categoryRows] = await db.query(
+                `
+                SELECT
+                    id,
+                    category_slug,
+                    display_name,
+                    section_type,
+                    sort_order,
+                    is_active,
+                    is_visible_on_site
+                FROM site_catalog_categories
+                WHERE id = ?
+                  AND is_active = 1
+                LIMIT 1
+                `,
+                [categoryId]
+            );
+
+            if (!categoryRows.length) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Категорію не знайдено"
+                });
+            }
+
+            const [aromas] = await db.query(
+                `
+                SELECT
+                    id,
+                    aroma_slug,
+                    display_name,
+                    description,
+                    longevity,
+                    intensity,
+                    sort_order
+                FROM site_catalog_aromas
+                WHERE is_active = 1
+                ORDER BY
+                    sort_order ASC,
+                    display_name ASC
+                `
+            );
+
+            const [attributes] = await db.query(
+                `
+                SELECT
+                    ca.attribute_id,
+                    ca.is_required,
+                    ca.sort_order AS category_sort_order,
+
+                    a.attribute_key,
+                    a.display_name,
+                    a.field_type,
+                    a.unit_label,
+                    a.sort_order AS attribute_sort_order
+
+                FROM site_catalog_category_attributes ca
+
+                INNER JOIN site_catalog_attributes a
+                    ON a.id = ca.attribute_id
+
+                WHERE ca.category_id = ?
+                  AND a.is_active = 1
+
+                ORDER BY
+                    ca.sort_order ASC,
+                    a.sort_order ASC,
+                    a.display_name ASC
+                `,
+                [categoryId]
+            );
+
+            let options = [];
+
+            if (attributes.length) {
+                const attributeIds = attributes
+                    .map(row =>
+                        Number(row.attribute_id || 0)
+                    )
+                    .filter(id => id > 0);
+
+                if (attributeIds.length) {
+                    const placeholders =
+                        attributeIds
+                            .map(() => "?")
+                            .join(",");
+
+                    const [optionRows] =
+                        await db.query(
+                            `
+                            SELECT
+                                id,
+                                attribute_id,
+                                option_key,
+                                display_name,
+                                sort_order
+                            FROM site_catalog_attribute_options
+                            WHERE is_active = 1
+                              AND attribute_id IN (${placeholders})
+                            ORDER BY
+                                attribute_id ASC,
+                                sort_order ASC,
+                                display_name ASC
+                            `,
+                            attributeIds
+                        );
+
+                    options = optionRows;
+                }
+            }
+
+            return res.json({
+                ok: true,
+                category: categoryRows[0],
+                aromas,
+                attributes,
+                options
+            });
+
+        } catch (err) {
+            console.error(
+                "STAFF SITE CATALOG FORM DATA ERROR:",
+                err
+            );
+
+            return res.status(500).json({
+                ok: false,
+                error: "server error"
+            });
+        }
+    }
+);
+
+
+/* ===================== STAFF: CREATE SITE CATALOG PRODUCT ===================== */
+
+app.post(
+    "/api/staff/site-catalog-create-product",
+    async (req, res) => {
+        const connection =
+            await db.getConnection();
+
+        try {
+            const staffId = Number(
+                req.body.staffId || 0
+            );
+
+            const categoryId = Number(
+                req.body.categoryId || 0
+            );
+
+            const aromaId = Number(
+                req.body.aromaId || 0
+            ) || null;
+
+            const displayName =
+                normalizeStaffProductName(
+                    req.body.displayName
+                );
+
+            const productDescription =
+                String(
+                    req.body.productDescription || ""
+                ).trim();
+
+            const rawVolumeValue =
+                Number(
+                    req.body.volumeValue || 0
+                );
+
+            const volumeValue =
+                Number.isFinite(rawVolumeValue) &&
+                rawVolumeValue > 0
+                    ? rawVolumeValue
+                    : null;
+
+            const volumeUnit =
+                String(
+                    req.body.volumeUnit || ""
+                )
+                    .trim()
+                    .slice(0, 30)
+                    || null;
+
+            const volumeLabel =
+                String(
+                    req.body.volumeLabel || ""
+                )
+                    .trim()
+                    .slice(0, 100)
+                    || (
+                        volumeValue && volumeUnit
+                            ? `${volumeValue} ${volumeUnit}`
+                            : null
+                    );
+
+            const price =
+                normalizeStaffProductPrice(
+                    req.body.price
+                );
+
+            const badge =
+                String(
+                    req.body.badge || ""
+                )
+                    .trim()
+                    .slice(0, 120)
+                    || null;
+
+            const requestedStatus =
+                String(
+                    req.body.status || "draft"
+                )
+                    .trim()
+                    .toLowerCase();
+
+            const status = [
+                "draft",
+                "published",
+                "hidden"
+            ].includes(requestedStatus)
+                ? requestedStatus
+                : "draft";
+
+            const sortOrderRaw = Number(
+                req.body.sortOrder || 0
+            );
+
+            const sortOrder =
+                Number.isInteger(sortOrderRaw)
+                    ? sortOrderRaw
+                    : 0;
+
+            const images =
+                Array.isArray(req.body.images)
+                    ? req.body.images
+                    : [];
+
+            const attributeValues =
+                Array.isArray(
+                    req.body.attributes
+                )
+                    ? req.body.attributes
+                    : [];
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res
+                    .status(access.status)
+                    .json({
+                        ok: false,
+                        error: access.error
+                    });
+            }
+
+            if (!categoryId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Оберіть розділ"
+                });
+            }
+
+            if (!displayName) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Вкажіть назву товару"
+                });
+            }
+
+            if (
+                status === "published" &&
+                price <= 0
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Для публікації вкажіть ціну товару"
+                });
+            }
+
+            const [categoryRows] =
+                await connection.query(
+                    `
+                    SELECT
+                        id,
+                        category_slug,
+                        display_name,
+                        section_type,
+                        sort_order,
+                        is_active,
+                        is_visible_on_site
+                    FROM site_catalog_categories
+                    WHERE id = ?
+                      AND is_active = 1
+                    LIMIT 1
+                    `,
+                    [categoryId]
+                );
+
+            if (!categoryRows.length) {
+                return res.status(404).json({
+                    ok: false,
+                    error:
+                        "Категорію каталогу не знайдено"
+                });
+            }
+
+            const category =
+                categoryRows[0];
+
+            let aroma = null;
+
+            if (aromaId) {
+                const [aromaRows] =
+                    await connection.query(
+                        `
+                        SELECT
+                            id,
+                            aroma_slug,
+                            display_name
+                        FROM site_catalog_aromas
+                        WHERE id = ?
+                          AND is_active = 1
+                        LIMIT 1
+                        `,
+                        [aromaId]
+                    );
+
+                if (!aromaRows.length) {
+                    return res.status(400).json({
+                        ok: false,
+                        error:
+                            "Обраний аромат не знайдено"
+                    });
+                }
+
+                aroma = aromaRows[0];
+            }
+
+            const {
+                productKey,
+                productGroupKey
+            } = buildSiteCatalogProductKeys({
+                categorySlug:
+                    category.category_slug,
+                displayName,
+                aromaSlug:
+                    aroma?.aroma_slug || "",
+                volumeValue,
+                volumeUnit
+            });
+
+            if (
+                !productKey ||
+                !productGroupKey
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Не вдалося сформувати ключ товару"
+                });
+            }
+
+            const [existingProductRows] =
+                await connection.query(
+                    `
+                    SELECT id
+                    FROM site_catalog_products
+                    WHERE product_key = ?
+                    LIMIT 1
+                    `,
+                    [productKey]
+                );
+
+            if (
+                existingProductRows.length
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Такий товар уже є у каталозі"
+                });
+            }
+
+            const [categoryAttributeRows] =
+                await connection.query(
+                    `
+                    SELECT
+                        ca.attribute_id,
+                        ca.is_required,
+
+                        a.attribute_key,
+                        a.display_name,
+                        a.field_type
+
+                    FROM site_catalog_category_attributes ca
+
+                    INNER JOIN site_catalog_attributes a
+                        ON a.id = ca.attribute_id
+
+                    WHERE ca.category_id = ?
+                      AND a.is_active = 1
+
+                    ORDER BY
+                        ca.sort_order ASC,
+                        a.sort_order ASC
+                    `,
+                    [categoryId]
+                );
+
+            const categoryAttributesById =
+                new Map(
+                    categoryAttributeRows.map(
+                        row => [
+                            Number(
+                                row.attribute_id
+                            ),
+                            row
+                        ]
+                    )
+                );
+
+            const submittedAttributesById =
+                new Map();
+
+            attributeValues.forEach(item => {
+                const attributeId = Number(
+                    item?.attributeId || 0
+                );
+
+                if (attributeId > 0) {
+                    submittedAttributesById.set(
+                        attributeId,
+                        item
+                    );
+                }
+            });
+
+            for (
+                const definition
+                of categoryAttributeRows
+            ) {
+                if (
+                    Number(
+                        definition.is_required || 0
+                    ) !== 1
+                ) {
+                    continue;
+                }
+
+                const submitted =
+                    submittedAttributesById.get(
+                        Number(
+                            definition.attribute_id
+                        )
+                    );
+
+                let hasValue = false;
+
+                if (submitted) {
+                    const fieldType =
+                        String(
+                            definition.field_type ||
+                            ""
+                        ).toLowerCase();
+
+                    if (
+                        fieldType === "boolean"
+                    ) {
+                        hasValue = true;
+                    } else if (
+                        fieldType === "number"
+                    ) {
+                        hasValue =
+                            submitted.value !== "" &&
+                            submitted.value !== null &&
+                            submitted.value !== undefined &&
+                            Number.isFinite(
+                                Number(
+                                    submitted.value
+                                )
+                            );
+                    } else if (
+                        fieldType === "select"
+                    ) {
+                        hasValue =
+                            Number(
+                                submitted.value || 0
+                            ) > 0;
+                    } else {
+                        hasValue =
+                            String(
+                                submitted.value || ""
+                            ).trim() !== "";
+                    }
+                }
+
+                if (!hasValue) {
+                    return res
+                        .status(400)
+                        .json({
+                            ok: false,
+                            error:
+                                `Заповніть поле «${definition.display_name}»`
+                        });
+                }
+            }
+
+            await connection.beginTransaction();
+
+            const [insertResult] =
+                await connection.query(
+                    `
+                    INSERT INTO site_catalog_products
+                    (
+                        product_key,
+                        product_group_key,
+                        category_id,
+                        aroma_id,
+                        display_name,
+                        product_description,
+                        volume_value,
+                        volume_unit,
+                        volume_label,
+                        price,
+                        badge,
+                        status,
+                        sort_order,
+                        products_catalog_id,
+                        created_by_staff_id,
+                        updated_by_staff_id
+                    )
+                    VALUES (
+                        ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?,
+                        ?, NULL, ?, ?
+                    )
+                    `,
+                    [
+                        productKey,
+                        productGroupKey,
+                        categoryId,
+                        aromaId,
+                        displayName,
+                        productDescription || null,
+                        volumeValue,
+                        volumeUnit,
+                        volumeLabel,
+                        price,
+                        badge,
+                        status,
+                        sortOrder,
+                        staffId,
+                        staffId
+                    ]
+                );
+
+            const siteProductId =
+                Number(
+                    insertResult.insertId || 0
+                );
+
+            const normalizedImages = images
+                .map((image, index) => ({
+                    imageUrl:
+                        String(
+                            image?.imageUrl || ""
+                        )
+                            .trim()
+                            .slice(0, 1000),
+
+                    altText:
+                        String(
+                            image?.altText || ""
+                        )
+                            .trim()
+                            .slice(0, 500),
+
+                    isMain:
+                        Number(
+                            image?.isMain || 0
+                        ) === 1
+                            ? 1
+                            : 0,
+
+                    sortOrder:
+                        Number.isInteger(
+                            Number(
+                                image?.sortOrder
+                            )
+                        )
+                            ? Number(
+                                image.sortOrder
+                            )
+                            : index
+                }))
+                .filter(
+                    image => image.imageUrl
+                );
+
+            if (
+                normalizedImages.length &&
+                !normalizedImages.some(
+                    image => image.isMain === 1
+                )
+            ) {
+                normalizedImages[0].isMain = 1;
+            }
+
+            for (
+                let index = 0;
+                index < normalizedImages.length;
+                index++
+            ) {
+                const image =
+                    normalizedImages[index];
+
+                await connection.query(
+                    `
+                    INSERT INTO site_catalog_product_images
+                    (
+                        product_id,
+                        image_url,
+                        alt_text,
+                        is_main,
+                        is_active,
+                        sort_order
+                    )
+                    VALUES (?, ?, ?, ?, 1, ?)
+                    `,
+                    [
+                        siteProductId,
+                        image.imageUrl,
+                        image.altText || null,
+                        image.isMain,
+                        image.sortOrder
+                    ]
+                );
+            }
+
+            for (
+                const submitted
+                of attributeValues
+            ) {
+                const attributeId =
+                    Number(
+                        submitted?.attributeId ||
+                        0
+                    );
+
+                const definition =
+                    categoryAttributesById.get(
+                        attributeId
+                    );
+
+                if (!definition) {
+                    continue;
+                }
+
+                const fieldType =
+                    String(
+                        definition.field_type || ""
+                    )
+                        .trim()
+                        .toLowerCase();
+
+                let optionId = null;
+                let valueText = null;
+                let valueNumber = null;
+                let valueBoolean = null;
+
+                if (fieldType === "select") {
+                    const selectedOptionId =
+                        Number(
+                            submitted.value || 0
+                        );
+
+                    if (!selectedOptionId) {
+                        continue;
+                    }
+
+                    const [optionRows] =
+                        await connection.query(
+                            `
+                            SELECT id
+                            FROM site_catalog_attribute_options
+                            WHERE id = ?
+                              AND attribute_id = ?
+                              AND is_active = 1
+                            LIMIT 1
+                            `,
+                            [
+                                selectedOptionId,
+                                attributeId
+                            ]
+                        );
+
+                    if (!optionRows.length) {
+                        throw new Error(
+                            "Некоректне значення select-атрибуту"
+                        );
+                    }
+
+                    optionId =
+                        selectedOptionId;
+
+                } else if (
+                    fieldType === "number"
+                ) {
+                    if (
+                        submitted.value === "" ||
+                        submitted.value === null ||
+                        submitted.value === undefined
+                    ) {
+                        continue;
+                    }
+
+                    const numericValue =
+                        Number(
+                            submitted.value
+                        );
+
+                    if (
+                        !Number.isFinite(
+                            numericValue
+                        )
+                    ) {
+                        continue;
+                    }
+
+                    valueNumber =
+                        numericValue;
+
+                } else if (
+                    fieldType === "boolean"
+                ) {
+                    valueBoolean =
+                        submitted.value
+                            ? 1
+                            : 0;
+
+                } else {
+                    const textValue =
+                        String(
+                            submitted.value || ""
+                        ).trim();
+
+                    if (!textValue) {
+                        continue;
+                    }
+
+                    valueText =
+                        textValue;
+                }
+
+                await connection.query(
+                    `
+                    INSERT INTO site_catalog_product_attribute_values
+                    (
+                        product_id,
+                        attribute_id,
+                        option_id,
+                        value_text,
+                        value_number,
+                        value_boolean
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    `,
+                    [
+                        siteProductId,
+                        attributeId,
+                        optionId,
+                        valueText,
+                        valueNumber,
+                        valueBoolean
+                    ]
+                );
+            }
+
+            let productsCatalogId = null;
+
+            if (status === "published") {
+                const categorySlug =
+                    String(
+                        category.category_slug ||
+                        ""
+                    ).trim();
+
+                const productLabel =
+                    normalizeStaffProductName(
+                        category.display_name
+                    );
+
+                const capacityMl =
+                    String(
+                        volumeUnit || ""
+                    )
+                        .trim()
+                        .toLowerCase() === "ml" &&
+                    Number.isInteger(
+                        Number(volumeValue)
+                    )
+                        ? Number(volumeValue)
+                        : null;
+
+                const legacyDisplayName =
+                    buildStaffProductDisplayName({
+                        productLabel,
+                        productName:
+                            displayName,
+                        capacityMl,
+                        categorySlug
+                    });
+
+                const [legacyDuplicateRows] =
+                    await connection.query(
+                        `
+                        SELECT id
+                        FROM products_catalog
+                        WHERE product_key = ?
+                        LIMIT 1
+                        `,
+                        [productKey]
+                    );
+
+                if (
+                    legacyDuplicateRows.length
+                ) {
+                    throw new Error(
+                        "У products_catalog вже є товар з таким product_key"
+                    );
+                }
+
+                const [legacyInsertResult] =
+                    await connection.query(
+                        `
+                        INSERT INTO products_catalog
+                        (
+                            product_key,
+                            product_name,
+                            display_name,
+                            product_label,
+                            category_slug,
+                            capacity_ml,
+                            price,
+                            cost_price,
+                            realization_price,
+                            is_active,
+                            staff_only
+                        )
+                        VALUES (
+                            ?, ?, ?, ?, ?, ?,
+                            ?, NULL, NULL, 1, 0
+                        )
+                        `,
+                        [
+                            productKey,
+                            displayName,
+                            legacyDisplayName,
+                            productLabel,
+                            categorySlug,
+                            capacityMl,
+                            price
+                        ]
+                    );
+
+                productsCatalogId =
+                    Number(
+                        legacyInsertResult.insertId ||
+                        0
+                    );
+
+                const stockManaged =
+                    isStaffCatalogProductStockManaged({
+                        product_key:
+                            productKey,
+                        display_name:
+                            legacyDisplayName,
+                        product_label:
+                            productLabel,
+                        category_slug:
+                            categorySlug
+                    });
+
+                if (
+                    productsCatalogId &&
+                    stockManaged
+                ) {
+                    await connection.query(
+                        `
+                        INSERT INTO stock_balances
+                        (
+                            warehouse_id,
+                            warehouse_name,
+                            supplier_details,
+                            buyer_details,
+                            document_basis,
+                            act_city,
+                            product_id,
+                            product_key,
+                            product_display_name,
+                            retail_price,
+                            cost_price,
+                            realization_price,
+                            initial_quantity,
+                            sales_quantity
+                        )
+                        SELECT
+                            w.warehouse_id,
+                            w.warehouse_name,
+                            w.supplier_details,
+                            w.buyer_details,
+                            w.document_basis,
+                            w.act_city,
+                            ?,
+                            ?,
+                            ?,
+                            ?,
+                            NULL,
+                            NULL,
+                            0,
+                            0
+                        FROM (
+                            SELECT
+                                warehouse_id,
+                                MAX(warehouse_name)
+                                    AS warehouse_name,
+                                MAX(supplier_details)
+                                    AS supplier_details,
+                                MAX(buyer_details)
+                                    AS buyer_details,
+                                MAX(document_basis)
+                                    AS document_basis,
+                                MAX(act_city)
+                                    AS act_city
+                            FROM stock_balances
+                            WHERE warehouse_id
+                                IS NOT NULL
+                            GROUP BY warehouse_id
+                        ) w
+
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM stock_balances sb
+                            WHERE sb.warehouse_id =
+                                w.warehouse_id
+                              AND sb.product_id = ?
+                        )
+                        `,
+                        [
+                            productsCatalogId,
+                            productKey,
+                            legacyDisplayName,
+                            price,
+                            productsCatalogId
+                        ]
+                    );
+                }
+
+                await connection.query(
+                    `
+                    UPDATE site_catalog_products
+                    SET
+                        products_catalog_id = ?,
+                        updated_by_staff_id = ?
+                    WHERE id = ?
+                    `,
+                    [
+                        productsCatalogId,
+                        staffId,
+                        siteProductId
+                    ]
+                );
+            }
+
+            await connection.commit();
+
+            return res.json({
+                ok: true,
+                product: {
+                    id: siteProductId,
+                    product_key:
+                        productKey,
+                    product_group_key:
+                        productGroupKey,
+                    display_name:
+                        displayName,
+                    status,
+                    products_catalog_id:
+                        productsCatalogId
+                }
+            });
+
+        } catch (err) {
+            try {
+                await connection.rollback();
+            } catch (rollbackErr) {
+                console.error(
+                    "STAFF SITE CATALOG CREATE ROLLBACK ERROR:",
+                    rollbackErr
+                );
+            }
+
+            console.error(
+                "STAFF SITE CATALOG CREATE ERROR:",
+                err
+            );
+
+            return res.status(500).json({
+                ok: false,
+                error:
+                    err?.message ||
+                    "server error"
+            });
+
+        } finally {
+            connection.release();
+        }
+    }
+);
+
 app.post("/api/staff/admin-products-list", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
