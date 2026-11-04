@@ -9532,6 +9532,244 @@ app.post(
     }
 );
 
+/* ===================== STAFF: SITE CATALOG IMAGE UPLOAD ===================== */
+
+app.post(
+    "/api/staff/site-catalog-upload-image",
+    async (req, res) => {
+        try {
+            const staffId = Number(
+                req.body.staffId || 0
+            );
+
+            const fileName = String(
+                req.body.fileName || ""
+            ).trim();
+
+            const mimeType = String(
+                req.body.mimeType || ""
+            )
+                .trim()
+                .toLowerCase();
+
+            const dataBase64 = String(
+                req.body.dataBase64 || ""
+            ).trim();
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res
+                    .status(access.status)
+                    .json({
+                        ok: false,
+                        error: access.error
+                    });
+            }
+
+            const githubToken = String(
+                process.env.MONAL_GITHUB_TOKEN || ""
+            ).trim();
+
+            const githubOwner = String(
+                process.env.MONAL_GITHUB_OWNER || ""
+            ).trim();
+
+            const githubRepo = String(
+                process.env.MONAL_GITHUB_REPO || ""
+            ).trim();
+
+            const githubBranch = String(
+                process.env.MONAL_GITHUB_BRANCH || "main"
+            ).trim();
+
+            if (
+                !githubToken ||
+                !githubOwner ||
+                !githubRepo
+            ) {
+                throw new Error(
+                    "GitHub upload is not configured"
+                );
+            }
+
+            const extensionByMime = {
+                "image/jpeg": "jpg",
+                "image/png": "png",
+                "image/webp": "webp"
+            };
+
+            const extension =
+                extensionByMime[mimeType];
+
+            if (
+                !fileName ||
+                !extension ||
+                !dataBase64
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Дозволені тільки JPG, PNG або WEBP."
+                });
+            }
+
+            const approximateFileSize =
+                Math.ceil(
+                    dataBase64.length * 3 / 4
+                );
+
+            if (
+                approximateFileSize >
+                5 * 1024 * 1024
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Фото завелике. Максимальний розмір — 5 МБ."
+                });
+            }
+
+            const originalBaseName =
+                fileName.replace(
+                    /\.[^.]+$/,
+                    ""
+                );
+
+            const safeBaseName =
+                originalBaseName
+                    .normalize("NFKD")
+                    .toLowerCase()
+                    .replace(
+                        /[^a-z0-9]+/g,
+                        "-"
+                    )
+                    .replace(
+                        /^-+|-+$/g,
+                        ""
+                    )
+                    .slice(0, 60)
+                || "product";
+
+            const uniquePart = [
+                Date.now(),
+                Math.random()
+                    .toString(36)
+                    .slice(2, 8)
+            ].join("-");
+
+            const repositoryPath =
+                `images/catalog/${safeBaseName}-${uniquePart}.${extension}`;
+
+            const encodedPath =
+                repositoryPath
+                    .split("/")
+                    .map(part =>
+                        encodeURIComponent(part)
+                    )
+                    .join("/");
+
+            const githubApiUrl =
+                `https://api.github.com/repos/${encodeURIComponent(githubOwner)}/${encodeURIComponent(githubRepo)}/contents/${encodedPath}`;
+
+            const githubResponse =
+                await fetch(
+                    githubApiUrl,
+                    {
+                        method: "PUT",
+
+                        headers: {
+                            "Accept":
+                                "application/vnd.github+json",
+
+                            "Authorization":
+                                `Bearer ${githubToken}`,
+
+                            "X-GitHub-Api-Version":
+                                "2022-11-28",
+
+                            "User-Agent":
+                                "monal-catalog-uploader",
+
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body:
+                            JSON.stringify({
+                                message:
+                                    `Catalog image: ${fileName}`,
+
+                                content:
+                                    dataBase64,
+
+                                branch:
+                                    githubBranch
+                            })
+                    }
+                );
+
+            const githubText =
+                await githubResponse.text();
+
+            let githubData = null;
+
+            try {
+                githubData =
+                    JSON.parse(
+                        githubText
+                    );
+            } catch (parseError) {
+                githubData = null;
+            }
+
+            if (
+                !githubResponse.ok ||
+                !githubData?.content
+            ) {
+                console.error(
+                    "GITHUB CATALOG UPLOAD ERROR:",
+                    githubText
+                );
+
+                return res.status(502).json({
+                    ok: false,
+                    error:
+                        githubData?.message ||
+                        "GitHub не прийняв фото."
+                });
+            }
+
+            const previewUrl =
+                githubData.content.download_url ||
+                `https://raw.githubusercontent.com/${githubOwner}/${githubRepo}/${githubBranch}/${repositoryPath}`;
+
+            return res.json({
+                ok: true,
+
+                imageUrl:
+                    repositoryPath,
+
+                previewUrl
+            });
+
+        } catch (err) {
+            console.error(
+                "STAFF SITE CATALOG IMAGE UPLOAD ERROR:",
+                err
+            );
+
+            return res.status(500).json({
+                ok: false,
+                error:
+                    "Не вдалося завантажити фото."
+            });
+        }
+    }
+);
 
 /* ===================== STAFF: CREATE SITE CATALOG PRODUCT ===================== */
 
@@ -9683,6 +9921,24 @@ app.post(
                 });
             }
 
+             const hasProductImage =
+                images.some(image =>
+                    String(
+                        image?.imageUrl || ""
+                    ).trim()
+                );
+
+            if (
+                status === "published" &&
+                !hasProductImage
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Для публікації додайте хоча б одне фото"
+                });
+            }
+            
             const [categoryRows] =
                 await connection.query(
                     `
