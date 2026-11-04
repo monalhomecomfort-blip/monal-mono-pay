@@ -9231,6 +9231,56 @@ app.post("/api/staff/admin-product-categories", async (req, res) => {
     }
 });
 
+app.post("/api/staff/site-catalog-categories", async (req, res) => {
+    try {
+        const staffId = Number(req.body.staffId || 0);
+
+        const access =
+            await getStaffAdminToolsManagerOrDeny(staffId);
+
+        if (!access.ok) {
+            return res.status(access.status).json({
+                ok: false,
+                error: access.error
+            });
+        }
+
+        const [categories] = await db.query(
+            `
+            SELECT
+                id,
+                category_slug,
+                display_name,
+                section_type,
+                sort_order,
+                is_active,
+                is_visible_on_site
+            FROM site_catalog_categories
+            ORDER BY
+                sort_order ASC,
+                display_name ASC
+            `
+        );
+
+        return res.json({
+            ok: true,
+            categories
+        });
+
+    } catch (err) {
+        console.error(
+            "STAFF SITE CATALOG CATEGORIES ERROR:",
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            categories: [],
+            error: "server error"
+        });
+    }
+});
+
 app.post("/api/staff/admin-products-list", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
