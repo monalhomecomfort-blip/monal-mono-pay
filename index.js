@@ -1249,7 +1249,13 @@ const PRODUCT_LIKE_CATEGORIES = new Set([
     "refills",
     "discovery",
     "gift-sets",
-    "certificates"
+    "certificates",
+    "candles",
+    "car-sachets",
+    "wardrobe-sachets",
+    "hand-soap",
+    "hand-cream",
+    "shower-gel"
 ]);
 
 function normalizeProductLikeField(value, maxLength) {
