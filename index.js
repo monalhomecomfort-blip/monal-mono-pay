@@ -10680,6 +10680,348 @@ app.post(
     }
 );
 
+/* ===================== PUBLIC: SITE CATALOG PRODUCTS ===================== */
+
+app.get(
+    "/api/site-catalog/published",
+    async (req, res) => {
+        try {
+            const [productRows] =
+                await db.query(
+                    `
+                    SELECT
+                        p.id,
+                        p.product_key,
+                        p.product_group_key,
+                        p.display_name,
+                        p.product_description,
+                        p.volume_value,
+                        p.volume_unit,
+                        p.volume_label,
+                        p.price,
+                        p.badge,
+                        p.sort_order,
+                        p.products_catalog_id,
+
+                        c.category_slug,
+                        c.display_name
+                            AS category_display_name,
+                        c.sort_order
+                            AS category_sort_order,
+
+                        a.id
+                            AS aroma_id,
+                        a.aroma_slug,
+                        a.display_name
+                            AS aroma_display_name,
+                        a.description
+                            AS aroma_description,
+                        a.longevity,
+                        a.intensity
+
+                    FROM site_catalog_products p
+
+                    INNER JOIN site_catalog_categories c
+                        ON c.id = p.category_id
+
+                    INNER JOIN products_catalog pc
+                        ON pc.id =
+                            p.products_catalog_id
+                       AND pc.staff_only = 0
+                       AND pc.is_active = 1
+
+                    LEFT JOIN site_catalog_aromas a
+                        ON a.id = p.aroma_id
+
+                    WHERE p.status = 'published'
+                      AND p.products_catalog_id
+                            IS NOT NULL
+                      AND c.is_active = 1
+                      AND c.is_visible_on_site = 1
+                      AND (
+                            p.aroma_id IS NULL
+                            OR a.is_active = 1
+                      )
+
+                    ORDER BY
+                        c.sort_order ASC,
+                        p.sort_order ASC,
+                        p.id ASC
+                    `
+                );
+
+            if (!productRows.length) {
+                return res.json({
+                    ok: true,
+                    products: []
+                });
+            }
+
+            const productIds =
+                productRows.map(row =>
+                    Number(row.id)
+                );
+
+            const productPlaceholders =
+                productIds
+                    .map(() => "?")
+                    .join(",");
+
+            const [imageRows] =
+                await db.query(
+                    `
+                    SELECT
+                        id,
+                        product_id,
+                        image_url,
+                        alt_text,
+                        is_main,
+                        sort_order
+
+                    FROM site_catalog_product_images
+
+                    WHERE is_active = 1
+                      AND product_id IN (
+                            ${productPlaceholders}
+                      )
+
+                    ORDER BY
+                        product_id ASC,
+                        is_main DESC,
+                        sort_order ASC,
+                        id ASC
+                    `,
+                    productIds
+                );
+
+            const aromaIds =
+                Array.from(
+                    new Set(
+                        productRows
+                            .map(row =>
+                                Number(
+                                    row.aroma_id || 0
+                                )
+                            )
+                            .filter(id => id > 0)
+                    )
+                );
+
+            let noteRows = [];
+
+            if (aromaIds.length) {
+                const aromaPlaceholders =
+                    aromaIds
+                        .map(() => "?")
+                        .join(",");
+
+                const [rows] =
+                    await db.query(
+                        `
+                        SELECT
+                            an.aroma_id,
+                            n.display_name,
+                            an.sort_order
+
+                        FROM site_catalog_aroma_notes an
+
+                        INNER JOIN site_catalog_notes n
+                            ON n.id = an.note_id
+
+                        WHERE an.aroma_id IN (
+                                ${aromaPlaceholders}
+                              )
+                          AND n.is_active = 1
+
+                        ORDER BY
+                            an.aroma_id ASC,
+                            an.sort_order ASC,
+                            an.id ASC
+                        `,
+                        aromaIds
+                    );
+
+                noteRows = rows;
+            }
+
+            const imagesByProduct =
+                new Map();
+
+            imageRows.forEach(row => {
+                const productId =
+                    Number(row.product_id);
+
+                if (
+                    !imagesByProduct.has(
+                        productId
+                    )
+                ) {
+                    imagesByProduct.set(
+                        productId,
+                        []
+                    );
+                }
+
+                imagesByProduct
+                    .get(productId)
+                    .push({
+                        image_url:
+                            row.image_url,
+
+                        alt_text:
+                            row.alt_text || "",
+
+                        is_main:
+                            Number(
+                                row.is_main || 0
+                            ),
+
+                        sort_order:
+                            Number(
+                                row.sort_order || 0
+                            )
+                    });
+            });
+
+            const notesByAroma =
+                new Map();
+
+            noteRows.forEach(row => {
+                const aromaId =
+                    Number(row.aroma_id);
+
+                if (
+                    !notesByAroma.has(
+                        aromaId
+                    )
+                ) {
+                    notesByAroma.set(
+                        aromaId,
+                        []
+                    );
+                }
+
+                notesByAroma
+                    .get(aromaId)
+                    .push(
+                        String(
+                            row.display_name ||
+                            ""
+                        ).trim()
+                    );
+            });
+
+            const products =
+                productRows.map(row => ({
+                    id:
+                        Number(row.id),
+
+                    product_key:
+                        row.product_key,
+
+                    product_group_key:
+                        row.product_group_key,
+
+                    display_name:
+                        row.display_name,
+
+                    product_description:
+                        row.product_description ||
+                        "",
+
+                    volume_value:
+                        row.volume_value === null
+                            ? null
+                            : Number(
+                                row.volume_value
+                            ),
+
+                    volume_unit:
+                        row.volume_unit || "",
+
+                    volume_label:
+                        row.volume_label || "",
+
+                    price:
+                        Number(
+                            row.price || 0
+                        ),
+
+                    badge:
+                        row.badge || "",
+
+                    category_slug:
+                        row.category_slug,
+
+                    category_display_name:
+                        row.category_display_name,
+
+                    aroma_id:
+                        row.aroma_id
+                            ? Number(
+                                row.aroma_id
+                            )
+                            : null,
+
+                    aroma_slug:
+                        row.aroma_slug || "",
+
+                    aroma_display_name:
+                        row.aroma_display_name ||
+                        "",
+
+                    aroma_description:
+                        row.aroma_description ||
+                        "",
+
+                    longevity:
+                        Number(
+                            row.longevity || 0
+                        ),
+
+                    intensity:
+                        Number(
+                            row.intensity || 0
+                        ),
+
+                    images:
+                        imagesByProduct.get(
+                            Number(row.id)
+                        ) || [],
+
+                    notes:
+                        row.aroma_id
+                            ? (
+                                notesByAroma.get(
+                                    Number(row.aroma_id)
+                                ) || []
+                            )
+                            : []
+                }));
+
+            return res.json({
+                ok: true,
+                products
+            });
+
+        } catch (err) {
+            console.error(
+                "PUBLIC SITE CATALOG ERROR:",
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    ok: false,
+                    products: [],
+                    error:
+                        "server error"
+                });
+        }
+    }
+);
+
 app.post("/api/staff/admin-products-list", async (req, res) => {
     try {
         const staffId = Number(req.body.staffId || 0);
