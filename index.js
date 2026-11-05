@@ -10708,6 +10708,10 @@ app.get(
                         p.badge,
                         p.sort_order,
                         p.products_catalog_id,
+                        COALESCE(
+                            pc.is_in_stock,
+                            1
+                        ) AS is_in_stock,
 
                         c.category_slug,
                         c.display_name
@@ -10955,6 +10959,11 @@ app.get(
 
                     badge:
                         row.badge || "",
+
+                    is_in_stock:
+                        Number(
+                            row.is_in_stock ?? 1
+                        ) === 1,
 
                     category_slug:
                         row.category_slug,
