@@ -9405,7 +9405,7 @@ app.post(
             const staticWhere = [
                 "pc.staff_only = 0",
                 "sp.id IS NULL",
-                "pc.category_slug <> 'certificates'"
+                "pc.category_slug IN ('aromadiffusers', 'refills', 'parfums')"
             ];
 
             const staticValues = [];
