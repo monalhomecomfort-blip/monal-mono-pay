@@ -9404,7 +9404,8 @@ app.post(
 
             const staticWhere = [
                 "pc.staff_only = 0",
-                "sp.id IS NULL"
+                "sp.id IS NULL",
+                "pc.category_slug <> 'certificates'"
             ];
 
             const staticValues = [];
@@ -10090,6 +10091,1580 @@ app.post(
                     ok: false,
                     error:
                         "Не вдалося завантажити товар"
+                });
+        }
+    }
+);
+
+function getStaticCatalogCardId({
+    categorySlug,
+    aromaSlug,
+    capacityMl,
+    productName
+}) {
+    const category =
+        String(
+            categorySlug || ""
+        )
+            .trim()
+            .toLowerCase();
+
+    const aroma =
+        String(
+            aromaSlug || ""
+        )
+            .trim()
+            .toLowerCase();
+
+    const capacity =
+        Number(
+            capacityMl || 0
+        );
+
+    const name =
+        String(
+            productName || ""
+        )
+            .trim()
+            .toLowerCase();
+
+    if (
+        category === "parfums" &&
+        aroma &&
+        capacity > 0
+    ) {
+        return `parfum-${aroma}-${capacity}`;
+    }
+
+    if (
+        category === "aromadiffusers" &&
+        aroma
+    ) {
+        return `diffuser-${aroma}`;
+    }
+
+    if (
+        category === "refills" &&
+        aroma
+    ) {
+        return `refill-${aroma}`;
+    }
+
+    if (
+        category === "discovery"
+    ) {
+        return "discovery-set-card";
+    }
+
+    if (
+        category === "gift-sets" &&
+        name.includes("ten mini")
+    ) {
+        return "ten-mini-card";
+    }
+
+    return "";
+}
+
+
+function normalizeSiteCatalogEditImages(
+    images
+) {
+    const normalized =
+        (
+            Array.isArray(images)
+                ? images
+                : []
+        )
+            .map(
+                (
+                    image,
+                    index
+                ) => ({
+                    imageUrl:
+                        String(
+                            image?.imageUrl ||
+                            ""
+                        )
+                            .trim()
+                            .slice(
+                                0,
+                                1000
+                            ),
+
+                    altText:
+                        String(
+                            image?.altText ||
+                            ""
+                        )
+                            .trim()
+                            .slice(
+                                0,
+                                500
+                            ),
+
+                    isMain:
+                        Number(
+                            image?.isMain ||
+                            0
+                        ) === 1
+                            ? 1
+                            : 0,
+
+                    sortOrder:
+                        Number.isInteger(
+                            Number(
+                                image?.sortOrder
+                            )
+                        )
+                            ? Number(
+                                image.sortOrder
+                            )
+                            : index
+                })
+            )
+            .filter(
+                image =>
+                    image.imageUrl
+            );
+
+    if (
+        normalized.length &&
+        !normalized.some(
+            image =>
+                image.isMain === 1
+        )
+    ) {
+        normalized[0].isMain = 1;
+    }
+
+    return normalized;
+}
+
+
+/* ===================== STAFF: SAVE SITE CATALOG EDIT ===================== */
+
+app.post(
+    "/api/staff/site-catalog-save-edit",
+    async (req, res) => {
+        const connection =
+            await db.getConnection();
+
+        try {
+            const staffId = Number(
+                req.body.staffId || 0
+            );
+
+            const source =
+                String(
+                    req.body.source || ""
+                )
+                    .trim()
+                    .toLowerCase();
+
+            const sourceId = Number(
+                req.body.sourceId || 0
+            );
+
+            const displayName =
+                normalizeStaffProductName(
+                    req.body.displayName
+                );
+
+            const productDescription =
+                String(
+                    req.body.productDescription ||
+                    ""
+                ).trim();
+
+            const aromaId =
+                Number(
+                    req.body.aromaId || 0
+                ) || null;
+
+            const price =
+                normalizeStaffProductPrice(
+                    req.body.price
+                );
+
+            const badge =
+                String(
+                    req.body.badge || ""
+                )
+                    .trim()
+                    .slice(
+                        0,
+                        120
+                    ) || null;
+
+            const requestedStatus =
+                String(
+                    req.body.status || ""
+                )
+                    .trim()
+                    .toLowerCase();
+
+            const rawVolumeValue =
+                Number(
+                    req.body.volumeValue ||
+                    0
+                );
+
+            const volumeValue =
+                Number.isFinite(
+                    rawVolumeValue
+                ) &&
+                rawVolumeValue > 0
+                    ? rawVolumeValue
+                    : null;
+
+            const volumeUnit =
+                String(
+                    req.body.volumeUnit ||
+                    ""
+                )
+                    .trim()
+                    .slice(
+                        0,
+                        30
+                    ) || null;
+
+            const volumeLabel =
+                String(
+                    req.body.volumeLabel ||
+                    ""
+                )
+                    .trim()
+                    .slice(
+                        0,
+                        100
+                    ) || (
+                        volumeValue &&
+                        volumeUnit
+                            ? `${volumeValue} ${volumeUnit}`
+                            : null
+                    );
+
+            const attributeValues =
+                Array.isArray(
+                    req.body.attributes
+                )
+                    ? req.body.attributes
+                    : [];
+
+            const normalizedImages =
+                normalizeSiteCatalogEditImages(
+                    req.body.images
+                );
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res
+                    .status(
+                        access.status
+                    )
+                    .json({
+                        ok: false,
+                        error:
+                            access.error
+                    });
+            }
+
+            if (
+                !["static", "database"]
+                    .includes(source) ||
+                !sourceId
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Некоректний товар"
+                    });
+            }
+
+            if (!displayName) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Вкажіть назву товару"
+                    });
+            }
+
+
+            /* ==========================================
+               STATIC HTML PRODUCT
+               ========================================== */
+
+            if (source === "static") {
+                const status =
+                    [
+                        "inherit",
+                        "published",
+                        "hidden"
+                    ].includes(
+                        requestedStatus
+                    )
+                        ? requestedStatus
+                        : "inherit";
+
+                const [productRows] =
+                    await connection.query(
+                        `
+                        SELECT
+                            pc.id,
+                            pc.product_key,
+                            pc.product_name,
+                            pc.display_name,
+                            pc.product_label,
+                            pc.category_slug,
+                            pc.capacity_ml,
+                            pc.price,
+
+                            o.static_card_id,
+
+                            a.id
+                                AS current_aroma_id,
+                            a.aroma_slug
+
+                        FROM products_catalog pc
+
+                        LEFT JOIN site_catalog_static_overrides o
+                            ON o.products_catalog_id =
+                                pc.id
+
+                        LEFT JOIN site_catalog_aromas a
+                            ON a.is_active = 1
+                           AND LOWER(
+                                TRIM(
+                                    a.display_name
+                                )
+                           ) =
+                               LOWER(
+                                TRIM(
+                                    pc.product_name
+                                )
+                           )
+
+                        WHERE pc.id = ?
+                          AND pc.staff_only = 0
+
+                        LIMIT 1
+                        `,
+                        [sourceId]
+                    );
+
+                if (!productRows.length) {
+                    return res
+                        .status(404)
+                        .json({
+                            ok: false,
+                            error:
+                                "Статичний товар не знайдено"
+                        });
+                }
+
+                const current =
+                    productRows[0];
+
+                const staticCardId =
+                    String(
+                        current.static_card_id ||
+                        getStaticCatalogCardId({
+                            categorySlug:
+                                current.category_slug,
+
+                            aromaSlug:
+                                current.aroma_slug,
+
+                            capacityMl:
+                                current.capacity_ml,
+
+                            productName:
+                                current.product_name
+                        })
+                    ).trim();
+
+                if (!staticCardId) {
+                    return res
+                        .status(400)
+                        .json({
+                            ok: false,
+                            error:
+                                "Для цього статичного товару не вдалося визначити картку сайту"
+                        });
+                }
+
+                if (
+                    status ===
+                        "published" &&
+                    price <= 0
+                ) {
+                    return res
+                        .status(400)
+                        .json({
+                            ok: false,
+                            error:
+                                "Для публікації вкажіть ціну"
+                        });
+                }
+
+                const operationalDisplayName =
+                    buildStaffProductDisplayName({
+                        productLabel:
+                            current.product_label,
+
+                        productName:
+                            displayName,
+
+                        capacityMl:
+                            current.capacity_ml,
+
+                        categorySlug:
+                            current.category_slug
+                    });
+
+                await connection
+                    .beginTransaction();
+
+                await connection.query(
+                    `
+                    UPDATE products_catalog
+                    SET
+                        product_name = ?,
+                        display_name = ?,
+                        price = ?
+                    WHERE id = ?
+                    `,
+                    [
+                        displayName,
+                        operationalDisplayName,
+                        price,
+                        sourceId
+                    ]
+                );
+
+                await connection.query(
+                    `
+                    UPDATE stock_balances
+                    SET
+                        product_display_name = ?,
+                        retail_price = ?
+                    WHERE product_id = ?
+                    `,
+                    [
+                        operationalDisplayName,
+                        price,
+                        sourceId
+                    ]
+                );
+
+                await connection.query(
+                    `
+                    INSERT INTO site_catalog_static_overrides
+                    (
+                        products_catalog_id,
+                        static_card_id,
+                        display_name,
+                        product_description,
+                        badge,
+                        aroma_id,
+                        visibility_status,
+                        updated_by_staff_id
+                    )
+                    VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+
+                    ON DUPLICATE KEY UPDATE
+                        static_card_id =
+                            VALUES(
+                                static_card_id
+                            ),
+
+                        display_name =
+                            VALUES(
+                                display_name
+                            ),
+
+                        product_description =
+                            VALUES(
+                                product_description
+                            ),
+
+                        badge =
+                            VALUES(
+                                badge
+                            ),
+
+                        aroma_id =
+                            VALUES(
+                                aroma_id
+                            ),
+
+                        visibility_status =
+                            VALUES(
+                                visibility_status
+                            ),
+
+                        updated_by_staff_id =
+                            VALUES(
+                                updated_by_staff_id
+                            )
+                    `,
+                    [
+                        sourceId,
+                        staticCardId,
+                        displayName,
+                        productDescription ||
+                            null,
+                        badge,
+                        aromaId,
+                        status,
+                        staffId
+                    ]
+                );
+
+                const [overrideRows] =
+                    await connection.query(
+                        `
+                        SELECT id
+                        FROM site_catalog_static_overrides
+                        WHERE products_catalog_id = ?
+                        LIMIT 1
+                        `,
+                        [sourceId]
+                    );
+
+                const overrideId =
+                    Number(
+                        overrideRows[0]?.id ||
+                        0
+                    );
+
+                if (!overrideId) {
+                    throw new Error(
+                        "Не вдалося зберегти override товару"
+                    );
+                }
+
+                await connection.query(
+                    `
+                    DELETE FROM site_catalog_static_override_images
+                    WHERE override_id = ?
+                    `,
+                    [overrideId]
+                );
+
+                for (
+                    let index = 0;
+                    index <
+                    normalizedImages.length;
+                    index++
+                ) {
+                    const image =
+                        normalizedImages[
+                            index
+                        ];
+
+                    await connection.query(
+                        `
+                        INSERT INTO site_catalog_static_override_images
+                        (
+                            override_id,
+                            image_url,
+                            alt_text,
+                            is_main,
+                            is_active,
+                            sort_order
+                        )
+                        VALUES (
+                            ?, ?, ?, ?, 1, ?
+                        )
+                        `,
+                        [
+                            overrideId,
+                            image.imageUrl,
+                            image.altText ||
+                                null,
+                            image.isMain,
+                            image.sortOrder
+                        ]
+                    );
+                }
+
+                await connection.commit();
+
+                return res.json({
+                    ok: true,
+
+                    source:
+                        "static",
+
+                    product: {
+                        id:
+                            sourceId,
+
+                        display_name:
+                            displayName,
+
+                        static_card_id:
+                            staticCardId,
+
+                        status,
+
+                        price
+                    }
+                });
+            }
+
+
+            /* ==========================================
+               DATABASE / STAFF PRODUCT
+               ========================================== */
+
+            const status =
+                [
+                    "draft",
+                    "published",
+                    "hidden"
+                ].includes(
+                    requestedStatus
+                )
+                    ? requestedStatus
+                    : "draft";
+
+            if (
+                status === "published" &&
+                price <= 0
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Для публікації вкажіть ціну"
+                    });
+            }
+
+            if (
+                status === "published" &&
+                !normalizedImages.length
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Для публікації потрібне хоча б одне фото"
+                    });
+            }
+
+            const [productRows] =
+                await connection.query(
+                    `
+                    SELECT
+                        p.id,
+                        p.product_key,
+                        p.product_group_key,
+                        p.category_id,
+                        p.products_catalog_id,
+
+                        c.category_slug,
+                        c.display_name
+                            AS category_display_name
+
+                    FROM site_catalog_products p
+
+                    INNER JOIN site_catalog_categories c
+                        ON c.id =
+                            p.category_id
+
+                    WHERE p.id = ?
+
+                    LIMIT 1
+                    `,
+                    [sourceId]
+                );
+
+            if (!productRows.length) {
+                return res
+                    .status(404)
+                    .json({
+                        ok: false,
+                        error:
+                            "Товар нового каталогу не знайдено"
+                    });
+            }
+
+            const current =
+                productRows[0];
+
+            let aroma = null;
+
+            if (aromaId) {
+                const [aromaRows] =
+                    await connection.query(
+                        `
+                        SELECT
+                            id,
+                            aroma_slug,
+                            display_name
+
+                        FROM site_catalog_aromas
+
+                        WHERE id = ?
+                          AND is_active = 1
+
+                        LIMIT 1
+                        `,
+                        [aromaId]
+                    );
+
+                if (!aromaRows.length) {
+                    return res
+                        .status(400)
+                        .json({
+                            ok: false,
+                            error:
+                                "Обраний аромат не знайдено"
+                        });
+                }
+
+                aroma =
+                    aromaRows[0];
+            }
+
+            const {
+                productKey,
+                productGroupKey
+            } =
+                buildSiteCatalogProductKeys({
+                    categorySlug:
+                        current.category_slug,
+
+                    displayName,
+
+                    aromaSlug:
+                        aroma?.aroma_slug ||
+                        "",
+
+                    volumeValue,
+                    volumeUnit
+                });
+
+            const [duplicateRows] =
+                await connection.query(
+                    `
+                    SELECT id
+                    FROM site_catalog_products
+                    WHERE product_key = ?
+                      AND id <> ?
+                    LIMIT 1
+                    `,
+                    [
+                        productKey,
+                        sourceId
+                    ]
+                );
+
+            if (
+                duplicateRows.length
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Такий товар уже є у каталозі"
+                    });
+            }
+
+            await connection
+                .beginTransaction();
+
+            await connection.query(
+                `
+                UPDATE site_catalog_products
+                SET
+                    product_key = ?,
+                    product_group_key = ?,
+                    aroma_id = ?,
+                    display_name = ?,
+                    product_description = ?,
+                    volume_value = ?,
+                    volume_unit = ?,
+                    volume_label = ?,
+                    price = ?,
+                    badge = ?,
+                    status = ?,
+                    updated_by_staff_id = ?
+                WHERE id = ?
+                `,
+                [
+                    productKey,
+                    productGroupKey,
+                    aromaId,
+                    displayName,
+                    productDescription ||
+                        null,
+                    volumeValue,
+                    volumeUnit,
+                    volumeLabel,
+                    price,
+                    badge,
+                    status,
+                    staffId,
+                    sourceId
+                ]
+            );
+
+            await connection.query(
+                `
+                DELETE FROM site_catalog_product_images
+                WHERE product_id = ?
+                `,
+                [sourceId]
+            );
+
+            for (
+                let index = 0;
+                index <
+                normalizedImages.length;
+                index++
+            ) {
+                const image =
+                    normalizedImages[
+                        index
+                    ];
+
+                await connection.query(
+                    `
+                    INSERT INTO site_catalog_product_images
+                    (
+                        product_id,
+                        image_url,
+                        alt_text,
+                        is_main,
+                        is_active,
+                        sort_order
+                    )
+                    VALUES (
+                        ?, ?, ?, ?, 1, ?
+                    )
+                    `,
+                    [
+                        sourceId,
+                        image.imageUrl,
+                        image.altText ||
+                            null,
+                        image.isMain,
+                        image.sortOrder
+                    ]
+                );
+            }
+
+            await connection.query(
+                `
+                DELETE FROM site_catalog_product_attribute_values
+                WHERE product_id = ?
+                `,
+                [sourceId]
+            );
+
+            for (
+                const submitted
+                of attributeValues
+            ) {
+                const attributeId =
+                    Number(
+                        submitted?.attributeId ||
+                        0
+                    );
+
+                if (!attributeId) {
+                    continue;
+                }
+
+                const [definitionRows] =
+                    await connection.query(
+                        `
+                        SELECT
+                            id,
+                            field_type
+
+                        FROM site_catalog_attributes
+
+                        WHERE id = ?
+                          AND is_active = 1
+
+                        LIMIT 1
+                        `,
+                        [attributeId]
+                    );
+
+                if (
+                    !definitionRows.length
+                ) {
+                    continue;
+                }
+
+                const fieldType =
+                    String(
+                        definitionRows[0]
+                            .field_type ||
+                        ""
+                    )
+                        .trim()
+                        .toLowerCase();
+
+                let optionId = null;
+                let valueText = null;
+                let valueNumber = null;
+                let valueBoolean = null;
+
+                if (
+                    fieldType === "select"
+                ) {
+                    optionId =
+                        Number(
+                            submitted.value ||
+                            0
+                        ) || null;
+
+                    if (!optionId) {
+                        continue;
+                    }
+
+                } else if (
+                    fieldType === "number"
+                ) {
+                    if (
+                        submitted.value ===
+                            "" ||
+                        submitted.value ===
+                            null ||
+                        submitted.value ===
+                            undefined
+                    ) {
+                        continue;
+                    }
+
+                    const numeric =
+                        Number(
+                            submitted.value
+                        );
+
+                    if (
+                        !Number.isFinite(
+                            numeric
+                        )
+                    ) {
+                        continue;
+                    }
+
+                    valueNumber =
+                        numeric;
+
+                } else if (
+                    fieldType ===
+                    "boolean"
+                ) {
+                    valueBoolean =
+                        submitted.value
+                            ? 1
+                            : 0;
+
+                } else {
+                    const textValue =
+                        String(
+                            submitted.value ||
+                            ""
+                        ).trim();
+
+                    if (!textValue) {
+                        continue;
+                    }
+
+                    valueText =
+                        textValue;
+                }
+
+                await connection.query(
+                    `
+                    INSERT INTO site_catalog_product_attribute_values
+                    (
+                        product_id,
+                        attribute_id,
+                        option_id,
+                        value_text,
+                        value_number,
+                        value_boolean
+                    )
+                    VALUES (
+                        ?, ?, ?, ?, ?, ?
+                    )
+                    `,
+                    [
+                        sourceId,
+                        attributeId,
+                        optionId,
+                        valueText,
+                        valueNumber,
+                        valueBoolean
+                    ]
+                );
+            }
+
+            let productsCatalogId =
+                Number(
+                    current
+                        .products_catalog_id ||
+                    0
+                ) || null;
+
+            const capacityMl =
+                String(
+                    volumeUnit || ""
+                )
+                    .trim()
+                    .toLowerCase() ===
+                    "ml" &&
+                Number.isInteger(
+                    Number(
+                        volumeValue
+                    )
+                )
+                    ? Number(
+                        volumeValue
+                    )
+                    : null;
+
+            const operationalDisplayName =
+                buildStaffProductDisplayName({
+                    productLabel:
+                        current
+                            .category_display_name,
+
+                    productName:
+                        displayName,
+
+                    capacityMl,
+
+                    categorySlug:
+                        current.category_slug
+                });
+
+            if (productsCatalogId) {
+                await connection.query(
+                    `
+                    UPDATE products_catalog
+                    SET
+                        product_key = ?,
+                        product_name = ?,
+                        display_name = ?,
+                        product_label = ?,
+                        category_slug = ?,
+                        capacity_ml = ?,
+                        price = ?,
+                        staff_only = 0
+                    WHERE id = ?
+                    `,
+                    [
+                        productKey,
+                        displayName,
+                        operationalDisplayName,
+                        current
+                            .category_display_name,
+                        current
+                            .category_slug,
+                        capacityMl,
+                        price,
+                        productsCatalogId
+                    ]
+                );
+
+                await connection.query(
+                    `
+                    UPDATE stock_balances
+                    SET
+                        product_key = ?,
+                        product_display_name = ?,
+                        retail_price = ?
+                    WHERE product_id = ?
+                    `,
+                    [
+                        productKey,
+                        operationalDisplayName,
+                        price,
+                        productsCatalogId
+                    ]
+                );
+
+                if (
+                    current.product_key !==
+                    productKey
+                ) {
+                    await connection.query(
+                        `
+                        UPDATE product_likes
+                        SET
+                            product_key = ?,
+                            product_name = ?,
+                            category_slug = ?
+                        WHERE product_key = ?
+                        `,
+                        [
+                            productKey,
+                            displayName,
+                            current
+                                .category_slug,
+                            current
+                                .product_key
+                        ]
+                    );
+                }
+
+            } else if (
+                status === "published"
+            ) {
+                const [insertResult] =
+                    await connection.query(
+                        `
+                        INSERT INTO products_catalog
+                        (
+                            product_key,
+                            product_name,
+                            display_name,
+                            product_label,
+                            category_slug,
+                            capacity_ml,
+                            price,
+                            cost_price,
+                            realization_price,
+                            is_active,
+                            staff_only
+                        )
+                        VALUES (
+                            ?, ?, ?, ?, ?, ?,
+                            ?, NULL, NULL, 1, 0
+                        )
+                        `,
+                        [
+                            productKey,
+                            displayName,
+                            operationalDisplayName,
+                            current
+                                .category_display_name,
+                            current
+                                .category_slug,
+                            capacityMl,
+                            price
+                        ]
+                    );
+
+                productsCatalogId =
+                    Number(
+                        insertResult.insertId ||
+                        0
+                    );
+
+                const stockManaged =
+                    isStaffCatalogProductStockManaged({
+                        product_key:
+                            productKey,
+
+                        display_name:
+                            operationalDisplayName,
+
+                        product_label:
+                            current
+                                .category_display_name,
+
+                        category_slug:
+                            current
+                                .category_slug
+                    });
+
+                if (
+                    productsCatalogId &&
+                    stockManaged
+                ) {
+                    await connection.query(
+                        `
+                        INSERT INTO stock_balances
+                        (
+                            warehouse_id,
+                            warehouse_name,
+                            supplier_details,
+                            buyer_details,
+                            document_basis,
+                            act_city,
+                            product_id,
+                            product_key,
+                            product_display_name,
+                            retail_price,
+                            cost_price,
+                            realization_price,
+                            initial_quantity,
+                            sales_quantity
+                        )
+
+                        SELECT
+                            w.warehouse_id,
+                            w.warehouse_name,
+                            w.supplier_details,
+                            w.buyer_details,
+                            w.document_basis,
+                            w.act_city,
+                            ?,
+                            ?,
+                            ?,
+                            ?,
+                            NULL,
+                            NULL,
+                            0,
+                            0
+
+                        FROM (
+                            SELECT
+                                warehouse_id,
+
+                                MAX(
+                                    warehouse_name
+                                )
+                                    AS warehouse_name,
+
+                                MAX(
+                                    supplier_details
+                                )
+                                    AS supplier_details,
+
+                                MAX(
+                                    buyer_details
+                                )
+                                    AS buyer_details,
+
+                                MAX(
+                                    document_basis
+                                )
+                                    AS document_basis,
+
+                                MAX(
+                                    act_city
+                                )
+                                    AS act_city
+
+                            FROM stock_balances
+
+                            WHERE warehouse_id
+                                IS NOT NULL
+
+                            GROUP BY
+                                warehouse_id
+                        ) w
+
+                        WHERE NOT EXISTS (
+                            SELECT 1
+
+                            FROM stock_balances sb
+
+                            WHERE sb.warehouse_id =
+                                    w.warehouse_id
+
+                              AND sb.product_id =
+                                    ?
+                        )
+                        `,
+                        [
+                            productsCatalogId,
+                            productKey,
+                            operationalDisplayName,
+                            price,
+                            productsCatalogId
+                        ]
+                    );
+                }
+
+                await connection.query(
+                    `
+                    UPDATE site_catalog_products
+                    SET products_catalog_id = ?
+                    WHERE id = ?
+                    `,
+                    [
+                        productsCatalogId,
+                        sourceId
+                    ]
+                );
+            }
+
+            await connection.commit();
+
+            return res.json({
+                ok: true,
+
+                source:
+                    "database",
+
+                product: {
+                    id:
+                        sourceId,
+
+                    product_key:
+                        productKey,
+
+                    display_name:
+                        displayName,
+
+                    status,
+
+                    price,
+
+                    products_catalog_id:
+                        productsCatalogId
+                }
+            });
+
+        } catch (err) {
+            try {
+                await connection
+                    .rollback();
+            } catch (
+                rollbackErr
+            ) {
+                console.error(
+                    "SITE CATALOG EDIT ROLLBACK ERROR:",
+                    rollbackErr
+                );
+            }
+
+            console.error(
+                "STAFF SITE CATALOG SAVE EDIT ERROR:",
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    ok: false,
+                    error:
+                        err?.message ||
+                        "Не вдалося зберегти товар"
+                });
+
+        } finally {
+            connection.release();
+        }
+    }
+);
+
+
+/* ===================== PUBLIC: STATIC CATALOG OVERRIDES ===================== */
+
+app.get(
+    "/api/site-catalog/static-overrides",
+    async (req, res) => {
+        try {
+            const [rows] =
+                await db.query(
+                    `
+                    SELECT
+                        o.id,
+                        o.products_catalog_id,
+                        o.static_card_id,
+                        o.display_name,
+                        o.product_description,
+                        o.badge,
+                        o.visibility_status,
+
+                        pc.product_key,
+                        pc.category_slug,
+                        pc.price,
+
+                        COALESCE(
+                            pc.is_in_stock,
+                            1
+                        ) AS is_in_stock
+
+                    FROM site_catalog_static_overrides o
+
+                    INNER JOIN products_catalog pc
+                        ON pc.id =
+                            o.products_catalog_id
+
+                    WHERE pc.staff_only = 0
+                      AND pc.is_active = 1
+                    `
+                );
+
+            if (!rows.length) {
+                return res.json({
+                    ok: true,
+                    overrides: []
+                });
+            }
+
+            const overrideIds =
+                rows.map(row =>
+                    Number(row.id)
+                );
+
+            const placeholders =
+                overrideIds
+                    .map(() => "?")
+                    .join(",");
+
+            const [imageRows] =
+                await db.query(
+                    `
+                    SELECT
+                        override_id,
+                        image_url,
+                        alt_text,
+                        is_main,
+                        sort_order
+
+                    FROM site_catalog_static_override_images
+
+                    WHERE is_active = 1
+                      AND override_id IN (
+                            ${placeholders}
+                      )
+
+                    ORDER BY
+                        override_id ASC,
+                        is_main DESC,
+                        sort_order ASC,
+                        id ASC
+                    `,
+                    overrideIds
+                );
+
+            const imagesByOverride =
+                new Map();
+
+            imageRows.forEach(
+                image => {
+                    const overrideId =
+                        Number(
+                            image.override_id
+                        );
+
+                    if (
+                        !imagesByOverride.has(
+                            overrideId
+                        )
+                    ) {
+                        imagesByOverride.set(
+                            overrideId,
+                            []
+                        );
+                    }
+
+                    imagesByOverride
+                        .get(
+                            overrideId
+                        )
+                        .push({
+                            image_url:
+                                image.image_url,
+
+                            alt_text:
+                                image.alt_text ||
+                                "",
+
+                            is_main:
+                                Number(
+                                    image.is_main ||
+                                    0
+                                ),
+
+                            sort_order:
+                                Number(
+                                    image.sort_order ||
+                                    0
+                                )
+                        });
+                }
+            );
+
+            return res.json({
+                ok: true,
+
+                overrides:
+                    rows.map(row => ({
+                        products_catalog_id:
+                            Number(
+                                row.products_catalog_id
+                            ),
+
+                        static_card_id:
+                            row.static_card_id,
+
+                        product_key:
+                            row.product_key,
+
+                        category_slug:
+                            row.category_slug,
+
+                        display_name:
+                            row.display_name ||
+                            "",
+
+                        product_description:
+                            row.product_description ||
+                            "",
+
+                        badge:
+                            row.badge ||
+                            "",
+
+                        price:
+                            Number(
+                                row.price ||
+                                0
+                            ),
+
+                        is_in_stock:
+                            Number(
+                                row.is_in_stock ??
+                                1
+                            ) === 1,
+
+                        visibility_status:
+                            row.visibility_status ||
+                            "inherit",
+
+                        images:
+                            imagesByOverride.get(
+                                Number(
+                                    row.id
+                                )
+                            ) || []
+                    }))
+            });
+
+        } catch (err) {
+            console.error(
+                "PUBLIC STATIC CATALOG OVERRIDES ERROR:",
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    ok: false,
+                    overrides: [],
+                    error:
+                        "server error"
                 });
         }
     }
