@@ -9287,6 +9287,814 @@ app.post("/api/staff/site-catalog-categories", async (req, res) => {
     }
 });
 
+/* ===================== STAFF: SITE CATALOG EDIT PRODUCTS ===================== */
+
+app.post(
+    "/api/staff/site-catalog-edit-products",
+    async (req, res) => {
+        try {
+            const staffId = Number(
+                req.body.staffId || 0
+            );
+
+            const categorySlug = String(
+                req.body.categorySlug || ""
+            )
+                .trim()
+                .toLowerCase();
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res
+                    .status(access.status)
+                    .json({
+                        ok: false,
+                        error: access.error
+                    });
+            }
+
+            const databaseWhere = [];
+            const databaseValues = [];
+
+            if (categorySlug) {
+                databaseWhere.push(
+                    "c.category_slug = ?"
+                );
+
+                databaseValues.push(
+                    categorySlug
+                );
+            }
+
+            const databaseWhereSql =
+                databaseWhere.length
+                    ? `WHERE ${databaseWhere.join(
+                        " AND "
+                    )}`
+                    : "";
+
+            const [databaseProducts] =
+                await db.query(
+                    `
+                    SELECT
+                        'database'
+                            AS source,
+
+                        p.id
+                            AS source_id,
+
+                        p.id
+                            AS site_product_id,
+
+                        p.products_catalog_id,
+
+                        p.product_key,
+
+                        p.display_name,
+
+                        p.volume_value,
+
+                        p.volume_unit,
+
+                        p.volume_label,
+
+                        COALESCE(
+                            pc.price,
+                            p.price
+                        ) AS price,
+
+                        p.status,
+
+                        c.id
+                            AS category_id,
+
+                        c.category_slug,
+
+                        c.display_name
+                            AS category_display_name,
+
+                        COALESCE(
+                            pc.is_in_stock,
+                            1
+                        ) AS is_in_stock
+
+                    FROM site_catalog_products p
+
+                    INNER JOIN site_catalog_categories c
+                        ON c.id = p.category_id
+
+                    LEFT JOIN products_catalog pc
+                        ON pc.id =
+                            p.products_catalog_id
+
+                    ${databaseWhereSql}
+
+                    ORDER BY
+                        c.sort_order ASC,
+                        p.sort_order ASC,
+                        p.display_name ASC,
+                        p.id ASC
+                    `,
+                    databaseValues
+                );
+
+            const staticWhere = [
+                "pc.staff_only = 0",
+                "sp.id IS NULL"
+            ];
+
+            const staticValues = [];
+
+            if (categorySlug) {
+                staticWhere.push(
+                    "pc.category_slug = ?"
+                );
+
+                staticValues.push(
+                    categorySlug
+                );
+            }
+
+            const [staticProducts] =
+                await db.query(
+                    `
+                    SELECT
+                        'static'
+                            AS source,
+
+                        pc.id
+                            AS source_id,
+
+                        NULL
+                            AS site_product_id,
+
+                        pc.id
+                            AS products_catalog_id,
+
+                        pc.product_key,
+
+                        COALESCE(
+                            o.display_name,
+                            pc.product_name,
+                            pc.display_name
+                        ) AS display_name,
+
+                        pc.capacity_ml
+                            AS volume_value,
+
+                        CASE
+                            WHEN pc.capacity_ml
+                                IS NOT NULL
+                            THEN 'ml'
+                            ELSE NULL
+                        END
+                            AS volume_unit,
+
+                        CASE
+                            WHEN pc.capacity_ml
+                                IS NOT NULL
+                            THEN CONCAT(
+                                pc.capacity_ml,
+                                ' ML'
+                            )
+                            ELSE NULL
+                        END
+                            AS volume_label,
+
+                        pc.price,
+
+                        CASE
+                            WHEN o.visibility_status =
+                                'hidden'
+                            THEN 'hidden'
+
+                            WHEN o.visibility_status =
+                                'published'
+                            THEN 'published'
+
+                            WHEN pc.is_active = 1
+                            THEN 'published'
+
+                            ELSE 'hidden'
+                        END
+                            AS status,
+
+                        c.id
+                            AS category_id,
+
+                        pc.category_slug,
+
+                        COALESCE(
+                            c.display_name,
+                            pc.product_label,
+                            pc.category_slug
+                        ) AS category_display_name,
+
+                        COALESCE(
+                            pc.is_in_stock,
+                            1
+                        ) AS is_in_stock
+
+                    FROM products_catalog pc
+
+                    LEFT JOIN site_catalog_products sp
+                        ON sp.products_catalog_id =
+                            pc.id
+
+                    LEFT JOIN site_catalog_static_overrides o
+                        ON o.products_catalog_id =
+                            pc.id
+
+                    LEFT JOIN site_catalog_categories c
+                        ON c.category_slug =
+                            pc.category_slug
+
+                    WHERE ${staticWhere.join(
+                        " AND "
+                    )}
+
+                    ORDER BY
+                        pc.category_slug ASC,
+                        pc.capacity_ml ASC,
+                        pc.display_name ASC,
+                        pc.id ASC
+                    `,
+                    staticValues
+                );
+
+            const products = [
+                ...staticProducts,
+                ...databaseProducts
+            ].sort((a, b) => {
+                const categoryCompare =
+                    String(
+                        a.category_display_name ||
+                        a.category_slug ||
+                        ""
+                    ).localeCompare(
+                        String(
+                            b.category_display_name ||
+                            b.category_slug ||
+                            ""
+                        ),
+                        "uk"
+                    );
+
+                if (categoryCompare !== 0) {
+                    return categoryCompare;
+                }
+
+                return String(
+                    a.display_name || ""
+                ).localeCompare(
+                    String(
+                        b.display_name || ""
+                    ),
+                    "uk"
+                );
+            });
+
+            return res.json({
+                ok: true,
+                products
+            });
+
+        } catch (err) {
+            console.error(
+                "STAFF SITE CATALOG EDIT PRODUCTS ERROR:",
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    ok: false,
+                    products: [],
+                    error:
+                        "Не вдалося завантажити товари"
+                });
+        }
+    }
+);
+
+
+/* ===================== STAFF: SITE CATALOG EDIT PRODUCT DATA ===================== */
+
+app.post(
+    "/api/staff/site-catalog-edit-product-data",
+    async (req, res) => {
+        try {
+            const staffId = Number(
+                req.body.staffId || 0
+            );
+
+            const source = String(
+                req.body.source || ""
+            )
+                .trim()
+                .toLowerCase();
+
+            const sourceId = Number(
+                req.body.sourceId || 0
+            );
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res
+                    .status(access.status)
+                    .json({
+                        ok: false,
+                        error: access.error
+                    });
+            }
+
+            if (
+                !["static", "database"].includes(
+                    source
+                ) ||
+                !sourceId
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Некоректний товар"
+                    });
+            }
+
+
+            /* ---------- NEW DATABASE PRODUCT ---------- */
+
+            if (source === "database") {
+                const [productRows] =
+                    await db.query(
+                        `
+                        SELECT
+                            p.id,
+                            p.product_key,
+                            p.product_group_key,
+
+                            p.category_id,
+                            p.aroma_id,
+
+                            p.display_name,
+                            p.product_description,
+
+                            p.volume_value,
+                            p.volume_unit,
+                            p.volume_label,
+
+                            COALESCE(
+                                pc.price,
+                                p.price
+                            ) AS price,
+
+                            p.badge,
+                            p.status,
+                            p.sort_order,
+
+                            p.products_catalog_id,
+
+                            c.category_slug,
+
+                            c.display_name
+                                AS category_display_name,
+
+                            COALESCE(
+                                pc.is_in_stock,
+                                1
+                            ) AS is_in_stock
+
+                        FROM site_catalog_products p
+
+                        INNER JOIN site_catalog_categories c
+                            ON c.id =
+                                p.category_id
+
+                        LEFT JOIN products_catalog pc
+                            ON pc.id =
+                                p.products_catalog_id
+
+                        WHERE p.id = ?
+
+                        LIMIT 1
+                        `,
+                        [sourceId]
+                    );
+
+                if (!productRows.length) {
+                    return res
+                        .status(404)
+                        .json({
+                            ok: false,
+                            error:
+                                "Товар не знайдено"
+                        });
+                }
+
+                const [images] =
+                    await db.query(
+                        `
+                        SELECT
+                            id,
+                            image_url,
+                            alt_text,
+                            is_main,
+                            sort_order
+
+                        FROM site_catalog_product_images
+
+                        WHERE product_id = ?
+                          AND is_active = 1
+
+                        ORDER BY
+                            is_main DESC,
+                            sort_order ASC,
+                            id ASC
+                        `,
+                        [sourceId]
+                    );
+
+                const [attributeRows] =
+                    await db.query(
+                        `
+                        SELECT
+                            pav.attribute_id,
+                            pav.option_id,
+                            pav.value_text,
+                            pav.value_number,
+                            pav.value_boolean,
+
+                            a.field_type
+
+                        FROM site_catalog_product_attribute_values pav
+
+                        INNER JOIN site_catalog_attributes a
+                            ON a.id =
+                                pav.attribute_id
+
+                        WHERE pav.product_id = ?
+                        `,
+                        [sourceId]
+                    );
+
+                const attributes =
+                    attributeRows.map(row => {
+                        const fieldType =
+                            String(
+                                row.field_type || ""
+                            )
+                                .trim()
+                                .toLowerCase();
+
+                        let value = "";
+
+                        if (
+                            fieldType ===
+                            "select"
+                        ) {
+                            value =
+                                Number(
+                                    row.option_id ||
+                                    0
+                                ) || "";
+
+                        } else if (
+                            fieldType ===
+                            "number"
+                        ) {
+                            value =
+                                row.value_number ===
+                                    null ||
+                                row.value_number ===
+                                    undefined
+                                    ? ""
+                                    : Number(
+                                        row.value_number
+                                    );
+
+                        } else if (
+                            fieldType ===
+                            "boolean"
+                        ) {
+                            value =
+                                Number(
+                                    row.value_boolean ||
+                                    0
+                                ) === 1;
+
+                        } else {
+                            value =
+                                row.value_text ||
+                                "";
+                        }
+
+                        return {
+                            attributeId:
+                                Number(
+                                    row.attribute_id
+                                ),
+
+                            value
+                        };
+                    });
+
+                return res.json({
+                    ok: true,
+
+                    source:
+                        "database",
+
+                    product:
+                        productRows[0],
+
+                    images,
+
+                    attributes,
+
+                    usesStaticImages:
+                        false
+                });
+            }
+
+
+            /* ---------- OLD STATIC PRODUCT ---------- */
+
+            const [productRows] =
+                await db.query(
+                    `
+                    SELECT
+                        pc.id,
+                        pc.product_key,
+
+                        pc.product_name,
+
+                        COALESCE(
+                            o.display_name,
+                            pc.product_name,
+                            pc.display_name
+                        ) AS display_name,
+
+                        COALESCE(
+                            o.product_description,
+                            ''
+                        ) AS product_description,
+
+                        pc.product_label,
+
+                        pc.category_slug,
+
+                        c.id
+                            AS category_id,
+
+                        COALESCE(
+                            c.display_name,
+                            pc.product_label,
+                            pc.category_slug
+                        ) AS category_display_name,
+
+                        pc.capacity_ml
+                            AS volume_value,
+
+                        CASE
+                            WHEN pc.capacity_ml
+                                IS NOT NULL
+                            THEN 'ml'
+                            ELSE NULL
+                        END
+                            AS volume_unit,
+
+                        CASE
+                            WHEN pc.capacity_ml
+                                IS NOT NULL
+                            THEN CONCAT(
+                                pc.capacity_ml,
+                                ' ML'
+                            )
+                            ELSE NULL
+                        END
+                            AS volume_label,
+
+                        pc.price,
+
+                        COALESCE(
+                            o.badge,
+                            ''
+                        ) AS badge,
+
+                        COALESCE(
+                            o.visibility_status,
+                            'inherit'
+                        ) AS visibility_status,
+
+                        COALESCE(
+                            pc.is_in_stock,
+                            1
+                        ) AS is_in_stock,
+
+                        COALESCE(
+                            o.aroma_id,
+                            a.id
+                        ) AS aroma_id,
+
+                        COALESCE(
+                            o.notes_top,
+                            ''
+                        ) AS notes_top,
+
+                        COALESCE(
+                            o.notes_heart,
+                            ''
+                        ) AS notes_heart,
+
+                        COALESCE(
+                            o.notes_base,
+                            ''
+                        ) AS notes_base,
+
+                        COALESCE(
+                            o.longevity,
+                            a.longevity
+                        ) AS longevity,
+
+                        COALESCE(
+                            o.intensity,
+                            a.intensity
+                        ) AS intensity
+
+                    FROM products_catalog pc
+
+                    LEFT JOIN site_catalog_static_overrides o
+                        ON o.products_catalog_id =
+                            pc.id
+
+                    LEFT JOIN site_catalog_categories c
+                        ON c.category_slug =
+                            pc.category_slug
+
+                    LEFT JOIN site_catalog_aromas a
+                        ON a.is_active = 1
+                       AND LOWER(
+                            TRIM(
+                                a.display_name
+                            )
+                       ) =
+                           LOWER(
+                            TRIM(
+                                pc.product_name
+                            )
+                       )
+
+                    WHERE pc.id = ?
+                      AND pc.staff_only = 0
+
+                    LIMIT 1
+                    `,
+                    [sourceId]
+                );
+
+            if (!productRows.length) {
+                return res
+                    .status(404)
+                    .json({
+                        ok: false,
+                        error:
+                            "Статичний товар не знайдено"
+                    });
+            }
+
+            const product =
+                productRows[0];
+
+            const [overrideRows] =
+                await db.query(
+                    `
+                    SELECT id
+                    FROM site_catalog_static_overrides
+                    WHERE products_catalog_id = ?
+                    LIMIT 1
+                    `,
+                    [sourceId]
+                );
+
+            let images = [];
+
+            if (overrideRows.length) {
+                const overrideId =
+                    Number(
+                        overrideRows[0].id
+                    );
+
+                const [imageRows] =
+                    await db.query(
+                        `
+                        SELECT
+                            id,
+                            image_url,
+                            alt_text,
+                            is_main,
+                            sort_order
+
+                        FROM site_catalog_static_override_images
+
+                        WHERE override_id = ?
+                          AND is_active = 1
+
+                        ORDER BY
+                            is_main DESC,
+                            sort_order ASC,
+                            id ASC
+                        `,
+                        [overrideId]
+                    );
+
+                images = imageRows;
+            }
+
+            let aromaNotes = [];
+
+            if (product.aroma_id) {
+                const [noteRows] =
+                    await db.query(
+                        `
+                        SELECT
+                            n.display_name
+
+                        FROM site_catalog_aroma_notes an
+
+                        INNER JOIN site_catalog_notes n
+                            ON n.id =
+                                an.note_id
+
+                        WHERE an.aroma_id = ?
+                          AND n.is_active = 1
+
+                        ORDER BY
+                            an.sort_order ASC,
+                            an.id ASC
+                        `,
+                        [
+                            Number(
+                                product.aroma_id
+                            )
+                        ]
+                    );
+
+                aromaNotes =
+                    noteRows
+                        .map(row =>
+                            String(
+                                row.display_name ||
+                                ""
+                            ).trim()
+                        )
+                        .filter(Boolean);
+            }
+
+            return res.json({
+                ok: true,
+
+                source:
+                    "static",
+
+                product,
+
+                images,
+
+                attributes: [],
+
+                aromaNotes,
+
+                usesStaticImages:
+                    images.length === 0
+            });
+
+        } catch (err) {
+            console.error(
+                "STAFF SITE CATALOG EDIT PRODUCT DATA ERROR:",
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    ok: false,
+                    error:
+                        "Не вдалося завантажити товар"
+                });
+        }
+    }
+);
+
 function getSiteCatalogProductTypeSlug(categorySlug) {
     const slug = String(categorySlug || "")
         .trim()
