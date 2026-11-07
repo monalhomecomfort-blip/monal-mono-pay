@@ -9847,6 +9847,7 @@ app.post(
 
                         COALESCE(
                             o.product_description,
+                            a.description,
                             ''
                         ) AS product_description,
 
@@ -9976,6 +9977,75 @@ app.post(
             const product =
                 productRows[0];
 
+            if (
+                !product.aroma_id
+            ) {
+                const aromaSlug =
+                    getLegacyStaticAromaSlug(
+                        product.product_key
+                    );
+
+                if (aromaSlug) {
+                    const [aromaRows] =
+                        await db.query(
+                            `
+                            SELECT
+                                id,
+                                description,
+                                longevity,
+                                intensity
+                            FROM site_catalog_aromas
+                            WHERE aroma_slug = ?
+                              AND is_active = 1
+                            LIMIT 1
+                            `,
+                            [aromaSlug]
+                        );
+
+                    if (
+                        aromaRows.length
+                    ) {
+                        product.aroma_id =
+                            Number(
+                                aromaRows[0].id
+                            );
+
+                        if (
+                            !product
+                                .product_description
+                        ) {
+                            product
+                                .product_description =
+                                aromaRows[0]
+                                    .description ||
+                                "";
+                        }
+
+                        if (
+                            product.longevity ===
+                                null ||
+                            product.longevity ===
+                                undefined
+                        ) {
+                            product.longevity =
+                                aromaRows[0]
+                                    .longevity;
+                        }
+
+                        if (
+                            product.intensity ===
+                                null ||
+                            product.intensity ===
+                                undefined
+                        ) {
+                            product.intensity =
+                                aromaRows[0]
+                                    .intensity;
+                        }
+                    }
+                }
+            }
+
             const [overrideRows] =
                 await db.query(
                     `
@@ -10095,6 +10165,49 @@ app.post(
         }
     }
 );
+
+function getLegacyStaticAromaSlug(
+    productKey
+) {
+    let key =
+        String(
+            productKey || ""
+        )
+            .trim()
+            .toLowerCase();
+
+    key = key
+        .replace(
+            /^diffuser_/,
+            ""
+        )
+        .replace(
+            /^refill_/,
+            ""
+        )
+        .replace(
+            /^parfum_/,
+            ""
+        )
+        .replace(
+            /^travel_black_/,
+            ""
+        )
+        .replace(
+            /^travel_/,
+            ""
+        )
+        .replace(
+            /_(15|100|200|275)$/,
+            ""
+        )
+        .replace(
+            /_/g,
+            "-"
+        );
+
+    return key;
+}
 
 function getStaticCatalogCardId({
     categorySlug,
@@ -10297,6 +10410,51 @@ app.post(
                         120
                     ) || null;
 
+            const notesText =
+                String(
+                    req.body.notesText ||
+                    ""
+                )
+                    .trim()
+                    .slice(
+                        0,
+                        2000
+                    );
+
+            const rawLongevity =
+                Number(
+                    req.body.longevity ||
+                    0
+                );
+
+            const longevity =
+                Number.isFinite(
+                    rawLongevity
+                ) &&
+                rawLongevity >= 1 &&
+                rawLongevity <= 5
+                    ? Math.round(
+                        rawLongevity
+                    )
+                    : null;
+
+            const rawIntensity =
+                Number(
+                    req.body.intensity ||
+                    0
+                );
+
+            const intensity =
+                Number.isFinite(
+                    rawIntensity
+                ) &&
+                rawIntensity >= 1 &&
+                rawIntensity <= 5
+                    ? Math.round(
+                        rawIntensity
+                    )
+                    : null;
+
             const requestedStatus =
                 String(
                     req.body.status || ""
@@ -10482,7 +10640,10 @@ app.post(
                                 current.category_slug,
 
                             aromaSlug:
-                                current.aroma_slug,
+                                current.aroma_slug ||
+                                getLegacyStaticAromaSlug(
+                                    current.product_key
+                                ),
 
                             capacityMl:
                                 current.capacity_ml,
@@ -10576,11 +10737,18 @@ app.post(
                         product_description,
                         badge,
                         aroma_id,
+                        notes_top,
+                        notes_heart,
+                        notes_base,
+                        longevity,
+                        intensity,
                         visibility_status,
                         updated_by_staff_id
                     )
                     VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?,
+                        ?, NULL, NULL, ?, ?,
+                        ?, ?
                     )
 
                     ON DUPLICATE KEY UPDATE
@@ -10609,6 +10777,31 @@ app.post(
                                 aroma_id
                             ),
 
+                        notes_top =
+                            VALUES(
+                                notes_top
+                            ),
+
+                        notes_heart =
+                            VALUES(
+                                notes_heart
+                            ),
+
+                        notes_base =
+                            VALUES(
+                                notes_base
+                            ),
+
+                        longevity =
+                            VALUES(
+                                longevity
+                            ),
+
+                        intensity =
+                            VALUES(
+                                intensity
+                            ),
+
                         visibility_status =
                             VALUES(
                                 visibility_status
@@ -10627,6 +10820,10 @@ app.post(
                             null,
                         badge,
                         aromaId,
+                        notesText ||
+                            null,
+                        longevity,
+                        intensity,
                         status,
                         staffId
                     ]
@@ -11466,6 +11663,651 @@ app.post(
     }
 );
 
+/* ===================== STAFF: SITE CATALOG SET STATUS ===================== */
+
+app.post(
+    "/api/staff/site-catalog-set-status",
+    async (req, res) => {
+        const connection =
+            await db.getConnection();
+
+        try {
+            const staffId =
+                Number(
+                    req.body.staffId ||
+                    0
+                );
+
+            const source =
+                String(
+                    req.body.source ||
+                    ""
+                )
+                    .trim()
+                    .toLowerCase();
+
+            const sourceId =
+                Number(
+                    req.body.sourceId ||
+                    0
+                );
+
+            const status =
+                String(
+                    req.body.status ||
+                    ""
+                )
+                    .trim()
+                    .toLowerCase();
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res
+                    .status(
+                        access.status
+                    )
+                    .json({
+                        ok: false,
+                        error:
+                            access.error
+                    });
+            }
+
+            if (
+                !["static", "database"]
+                    .includes(source) ||
+                !sourceId ||
+                !["published", "hidden"]
+                    .includes(status)
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Некоректні дані"
+                    });
+            }
+
+            await connection
+                .beginTransaction();
+
+
+            /* ---------- STATIC ---------- */
+
+            if (
+                source === "static"
+            ) {
+                const [rows] =
+                    await connection.query(
+                        `
+                        SELECT
+                            pc.id,
+                            pc.product_key,
+                            pc.product_name,
+                            pc.category_slug,
+                            pc.capacity_ml,
+
+                            o.static_card_id,
+
+                            a.aroma_slug
+
+                        FROM products_catalog pc
+
+                        LEFT JOIN site_catalog_static_overrides o
+                            ON o.products_catalog_id =
+                                pc.id
+
+                        LEFT JOIN site_catalog_aromas a
+                            ON a.is_active = 1
+                           AND LOWER(
+                                TRIM(
+                                    a.display_name
+                                )
+                           ) =
+                               LOWER(
+                                TRIM(
+                                    pc.product_name
+                                )
+                           )
+
+                        WHERE pc.id = ?
+                          AND pc.staff_only = 0
+
+                        LIMIT 1
+                        `,
+                        [sourceId]
+                    );
+
+                if (!rows.length) {
+                    await connection
+                        .rollback();
+
+                    return res
+                        .status(404)
+                        .json({
+                            ok: false,
+                            error:
+                                "Товар не знайдено"
+                        });
+                }
+
+                const product =
+                    rows[0];
+
+                const staticCardId =
+                    String(
+                        product
+                            .static_card_id ||
+                        getStaticCatalogCardId({
+                            categorySlug:
+                                product
+                                    .category_slug,
+
+                            aromaSlug:
+                                product
+                                    .aroma_slug ||
+                                getLegacyStaticAromaSlug(
+                                    product
+                                        .product_key
+                                ),
+
+                            capacityMl:
+                                product
+                                    .capacity_ml,
+
+                            productName:
+                                product
+                                    .product_name
+                        })
+                    ).trim();
+
+                if (!staticCardId) {
+                    await connection
+                        .rollback();
+
+                    return res
+                        .status(400)
+                        .json({
+                            ok: false,
+                            error:
+                                "Не вдалося визначити картку товару"
+                        });
+                }
+
+                await connection.query(
+                    `
+                    INSERT INTO site_catalog_static_overrides
+                    (
+                        products_catalog_id,
+                        static_card_id,
+                        visibility_status,
+                        updated_by_staff_id
+                    )
+                    VALUES (
+                        ?, ?, ?, ?
+                    )
+
+                    ON DUPLICATE KEY UPDATE
+                        static_card_id =
+                            VALUES(
+                                static_card_id
+                            ),
+
+                        visibility_status =
+                            VALUES(
+                                visibility_status
+                            ),
+
+                        updated_by_staff_id =
+                            VALUES(
+                                updated_by_staff_id
+                            )
+                    `,
+                    [
+                        sourceId,
+                        staticCardId,
+                        status,
+                        staffId
+                    ]
+                );
+
+                await connection.commit();
+
+                return res.json({
+                    ok: true,
+                    source,
+                    status
+                });
+            }
+
+
+            /* ---------- DATABASE ---------- */
+
+            const [rows] =
+                await connection.query(
+                    `
+                    SELECT
+                        p.id,
+                        p.product_key,
+                        p.display_name,
+                        p.volume_value,
+                        p.volume_unit,
+                        p.price,
+                        p.products_catalog_id,
+
+                        c.category_slug,
+                        c.display_name
+                            AS category_display_name
+
+                    FROM site_catalog_products p
+
+                    INNER JOIN site_catalog_categories c
+                        ON c.id =
+                            p.category_id
+
+                    WHERE p.id = ?
+
+                    LIMIT 1
+                    `,
+                    [sourceId]
+                );
+
+            if (!rows.length) {
+                await connection
+                    .rollback();
+
+                return res
+                    .status(404)
+                    .json({
+                        ok: false,
+                        error:
+                            "Товар не знайдено"
+                    });
+            }
+
+            const product =
+                rows[0];
+
+            if (
+                status === "hidden"
+            ) {
+                await connection.query(
+                    `
+                    UPDATE site_catalog_products
+                    SET
+                        status = 'hidden',
+                        updated_by_staff_id = ?
+                    WHERE id = ?
+                    `,
+                    [
+                        staffId,
+                        sourceId
+                    ]
+                );
+
+                await connection.commit();
+
+                return res.json({
+                    ok: true,
+                    source,
+                    status
+                });
+            }
+
+
+            if (
+                Number(
+                    product.price ||
+                    0
+                ) <= 0
+            ) {
+                await connection
+                    .rollback();
+
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Для публікації вкажіть ціну"
+                    });
+            }
+
+            const [imageRows] =
+                await connection.query(
+                    `
+                    SELECT id
+                    FROM site_catalog_product_images
+                    WHERE product_id = ?
+                      AND is_active = 1
+                    LIMIT 1
+                    `,
+                    [sourceId]
+                );
+
+            if (!imageRows.length) {
+                await connection
+                    .rollback();
+
+                return res
+                    .status(400)
+                    .json({
+                        ok: false,
+                        error:
+                            "Для публікації додайте фото"
+                    });
+            }
+
+            const capacityMl =
+                String(
+                    product.volume_unit ||
+                    ""
+                )
+                    .trim()
+                    .toLowerCase() ===
+                    "ml" &&
+                Number.isInteger(
+                    Number(
+                        product.volume_value
+                    )
+                )
+                    ? Number(
+                        product.volume_value
+                    )
+                    : null;
+
+            const operationalDisplayName =
+                buildStaffProductDisplayName({
+                    productLabel:
+                        product
+                            .category_display_name,
+
+                    productName:
+                        product.display_name,
+
+                    capacityMl,
+
+                    categorySlug:
+                        product
+                            .category_slug
+                });
+
+            let productsCatalogId =
+                Number(
+                    product
+                        .products_catalog_id ||
+                    0
+                ) || null;
+
+            if (productsCatalogId) {
+                await connection.query(
+                    `
+                    UPDATE products_catalog
+                    SET
+                        product_key = ?,
+                        product_name = ?,
+                        display_name = ?,
+                        product_label = ?,
+                        category_slug = ?,
+                        capacity_ml = ?,
+                        price = ?,
+                        is_active = 1,
+                        staff_only = 0
+                    WHERE id = ?
+                    `,
+                    [
+                        product.product_key,
+                        product.display_name,
+                        operationalDisplayName,
+                        product
+                            .category_display_name,
+                        product
+                            .category_slug,
+                        capacityMl,
+                        product.price,
+                        productsCatalogId
+                    ]
+                );
+
+            } else {
+                const [duplicateRows] =
+                    await connection.query(
+                        `
+                        SELECT id
+                        FROM products_catalog
+                        WHERE product_key = ?
+                        LIMIT 1
+                        `,
+                        [
+                            product
+                                .product_key
+                        ]
+                    );
+
+                if (
+                    duplicateRows.length
+                ) {
+                    throw new Error(
+                        "У products_catalog вже є товар з таким product_key"
+                    );
+                }
+
+                const [insertResult] =
+                    await connection.query(
+                        `
+                        INSERT INTO products_catalog
+                        (
+                            product_key,
+                            product_name,
+                            display_name,
+                            product_label,
+                            category_slug,
+                            capacity_ml,
+                            price,
+                            cost_price,
+                            realization_price,
+                            is_active,
+                            staff_only
+                        )
+                        VALUES (
+                            ?, ?, ?, ?, ?, ?,
+                            ?, NULL, NULL, 1, 0
+                        )
+                        `,
+                        [
+                            product.product_key,
+                            product.display_name,
+                            operationalDisplayName,
+                            product
+                                .category_display_name,
+                            product
+                                .category_slug,
+                            capacityMl,
+                            product.price
+                        ]
+                    );
+
+                productsCatalogId =
+                    Number(
+                        insertResult
+                            .insertId ||
+                        0
+                    );
+
+                const stockManaged =
+                    isStaffCatalogProductStockManaged({
+                        product_key:
+                            product.product_key,
+
+                        display_name:
+                            operationalDisplayName,
+
+                        product_label:
+                            product
+                                .category_display_name,
+
+                        category_slug:
+                            product
+                                .category_slug
+                    });
+
+                if (
+                    productsCatalogId &&
+                    stockManaged
+                ) {
+                    await connection.query(
+                        `
+                        INSERT INTO stock_balances
+                        (
+                            warehouse_id,
+                            warehouse_name,
+                            supplier_details,
+                            buyer_details,
+                            document_basis,
+                            act_city,
+                            product_id,
+                            product_key,
+                            product_display_name,
+                            retail_price,
+                            cost_price,
+                            realization_price,
+                            initial_quantity,
+                            sales_quantity
+                        )
+
+                        SELECT
+                            w.warehouse_id,
+                            w.warehouse_name,
+                            w.supplier_details,
+                            w.buyer_details,
+                            w.document_basis,
+                            w.act_city,
+                            ?,
+                            ?,
+                            ?,
+                            ?,
+                            NULL,
+                            NULL,
+                            0,
+                            0
+
+                        FROM (
+                            SELECT
+                                warehouse_id,
+                                MAX(
+                                    warehouse_name
+                                ) AS warehouse_name,
+                                MAX(
+                                    supplier_details
+                                ) AS supplier_details,
+                                MAX(
+                                    buyer_details
+                                ) AS buyer_details,
+                                MAX(
+                                    document_basis
+                                ) AS document_basis,
+                                MAX(
+                                    act_city
+                                ) AS act_city
+                            FROM stock_balances
+                            WHERE warehouse_id
+                                IS NOT NULL
+                            GROUP BY
+                                warehouse_id
+                        ) w
+
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM stock_balances sb
+                            WHERE sb.warehouse_id =
+                                    w.warehouse_id
+                              AND sb.product_id = ?
+                        )
+                        `,
+                        [
+                            productsCatalogId,
+                            product.product_key,
+                            operationalDisplayName,
+                            product.price,
+                            productsCatalogId
+                        ]
+                    );
+                }
+
+                await connection.query(
+                    `
+                    UPDATE site_catalog_products
+                    SET
+                        products_catalog_id = ?
+                    WHERE id = ?
+                    `,
+                    [
+                        productsCatalogId,
+                        sourceId
+                    ]
+                );
+            }
+
+            await connection.query(
+                `
+                UPDATE site_catalog_products
+                SET
+                    status = 'published',
+                    updated_by_staff_id = ?
+                WHERE id = ?
+                `,
+                [
+                    staffId,
+                    sourceId
+                ]
+            );
+
+            await connection.commit();
+
+            return res.json({
+                ok: true,
+                source,
+                status:
+                    "published"
+            });
+
+        } catch (err) {
+            try {
+                await connection
+                    .rollback();
+            } catch (
+                rollbackErr
+            ) {
+                console.error(
+                    "SITE CATALOG SET STATUS ROLLBACK ERROR:",
+                    rollbackErr
+                );
+            }
+
+            console.error(
+                "SITE CATALOG SET STATUS ERROR:",
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    ok: false,
+                    error:
+                        err?.message ||
+                        "Не вдалося змінити статус"
+                });
+
+        } finally {
+            connection.release();
+        }
+    }
+);
 
 /* ===================== PUBLIC: STATIC CATALOG OVERRIDES ===================== */
 
@@ -11484,6 +12326,12 @@ app.get(
                         o.product_description,
                         o.badge,
                         o.visibility_status,
+
+                        o.notes_top,
+                        o.notes_heart,
+                        o.notes_base,
+                        o.longevity,
+                        o.intensity,
 
                         pc.product_key,
                         pc.category_slug,
@@ -11626,6 +12474,38 @@ app.get(
                         badge:
                             row.badge ||
                             "",
+
+                        notes_top:
+                            row.notes_top ||
+                            "",
+
+                        notes_heart:
+                            row.notes_heart ||
+                            "",
+
+                        notes_base:
+                            row.notes_base ||
+                            "",
+
+                        longevity:
+                            row.longevity ===
+                                null ||
+                            row.longevity ===
+                                undefined
+                                ? null
+                                : Number(
+                                    row.longevity
+                                ),
+
+                        intensity:
+                            row.intensity ===
+                                null ||
+                            row.intensity ===
+                                undefined
+                                ? null
+                                : Number(
+                                    row.intensity
+                                ),
 
                         price:
                             Number(
