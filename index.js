@@ -9256,17 +9256,26 @@ app.post("/api/staff/site-catalog-categories", async (req, res) => {
         const [categories] = await db.query(
             `
             SELECT
-                id,
-                category_slug,
-                display_name,
-                section_type,
-                sort_order,
-                is_active,
-                is_visible_on_site
-            FROM site_catalog_categories
+                c.id,
+                c.category_slug,
+                c.display_name,
+                c.section_type,
+                c.sort_order,
+                c.is_active,
+                c.is_visible_on_site,
+
+                EXISTS (
+                    SELECT 1
+                    FROM site_catalog_products p
+                    WHERE p.category_id = c.id
+                      AND p.status = 'published'
+                ) AS has_published_product
+
+            FROM site_catalog_categories c
+
             ORDER BY
-                sort_order ASC,
-                display_name ASC
+                c.sort_order ASC,
+                c.display_name ASC
             `
         );
 
@@ -11986,43 +11995,27 @@ app.post(
             if (
                 status === "hidden"
             ) {
-            await connection.query(
-                `
-                UPDATE site_catalog_products
-                SET
-                    status = 'published',
-                    updated_by_staff_id = ?
-                WHERE id = ?
-                `,
-                [
-                    staffId,
-                    sourceId
-                ]
-            );
+                await connection.query(
+                    `
+                    UPDATE site_catalog_products
+                    SET
+                        status = 'hidden',
+                        updated_by_staff_id = ?
+                    WHERE id = ?
+                    `,
+                    [
+                        staffId,
+                        sourceId
+                    ]
+                );
 
-            await connection.query(
-                `
-                UPDATE site_catalog_categories
-                SET
-                    section_type = 'existing',
-                    is_active = 1,
-                    is_visible_on_site = 1
-                WHERE id = ?
-                `,
-                [
-                    Number(
-                        product.category_id ||
-                        0
-                    )
-                ]
-            );
-
-            await connection.commit();
+                await connection.commit();
 
                 return res.json({
                     ok: true,
                     source,
-                    status
+                    status:
+                        "hidden"
                 });
             }
 
