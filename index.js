@@ -2454,6 +2454,8 @@ function getStaffPersonalPercentCategoryKeys(value) {
         keys.add("gift-sets");
     }
 
+    keys.add(text);
+
     return Array.from(keys).filter(Boolean);
 }
 
@@ -11946,6 +11948,7 @@ app.post(
                         p.volume_unit,
                         p.price,
                         p.products_catalog_id,
+                        p.category_id,
 
                         c.category_slug,
                         c.display_name
@@ -11983,21 +11986,38 @@ app.post(
             if (
                 status === "hidden"
             ) {
-                await connection.query(
-                    `
-                    UPDATE site_catalog_products
-                    SET
-                        status = 'hidden',
-                        updated_by_staff_id = ?
-                    WHERE id = ?
-                    `,
-                    [
-                        staffId,
-                        sourceId
-                    ]
-                );
+            await connection.query(
+                `
+                UPDATE site_catalog_products
+                SET
+                    status = 'published',
+                    updated_by_staff_id = ?
+                WHERE id = ?
+                `,
+                [
+                    staffId,
+                    sourceId
+                ]
+            );
 
-                await connection.commit();
+            await connection.query(
+                `
+                UPDATE site_catalog_categories
+                SET
+                    section_type = 'existing',
+                    is_active = 1,
+                    is_visible_on_site = 1
+                WHERE id = ?
+                `,
+                [
+                    Number(
+                        product.category_id ||
+                        0
+                    )
+                ]
+            );
+
+            await connection.commit();
 
                 return res.json({
                     ok: true,
@@ -13947,6 +13967,18 @@ app.post(
                         staffId,
                         siteProductId
                     ]
+                );
+
+                await connection.query(
+                    `
+                    UPDATE site_catalog_categories
+                    SET
+                        section_type = 'existing',
+                        is_active = 1,
+                        is_visible_on_site = 1
+                    WHERE id = ?
+                    `,
+                    [categoryId]
                 );
             }
 
