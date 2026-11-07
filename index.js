@@ -12327,6 +12327,23 @@ app.post(
                 ]
             );
 
+            await connection.query(
+                `
+                UPDATE site_catalog_categories
+                SET
+                    section_type = 'existing',
+                    is_active = 1,
+                    is_visible_on_site = 1
+                WHERE id = ?
+                `,
+                [
+                    Number(
+                        product.category_id ||
+                        0
+                    )
+                ]
+            );
+
             await connection.commit();
 
             return res.json({
