@@ -9977,6 +9977,26 @@ app.post(
             const product =
                 productRows[0];
 
+            const legacyCapacityMl =
+                Number(
+                    product.volume_value ||
+                    0
+                ) ||
+                getLegacyStaticCapacityMl(
+                    product.product_key
+                );
+
+            if (legacyCapacityMl) {
+                product.volume_value =
+                    legacyCapacityMl;
+
+                product.volume_unit =
+                    "ml";
+
+                product.volume_label =
+                    `${legacyCapacityMl} ML`;
+            }
+
             if (
                 !product.aroma_id
             ) {
@@ -10207,6 +10227,26 @@ function getLegacyStaticAromaSlug(
         );
 
     return key;
+}
+
+function getLegacyStaticCapacityMl(
+    productKey
+) {
+    const match =
+        String(
+            productKey || ""
+        )
+            .trim()
+            .toLowerCase()
+            .match(
+                /_(15|100|200|275)$/
+            );
+
+    return match
+        ? Number(
+            match[1]
+        )
+        : null;
 }
 
 function getStaticCatalogCardId({
@@ -10646,7 +10686,10 @@ app.post(
                                 ),
 
                             capacityMl:
-                                current.capacity_ml,
+                                current.capacity_ml ||
+                                getLegacyStaticCapacityMl(
+                                    current.product_key
+                                ),
 
                             productName:
                                 current.product_name
@@ -11818,7 +11861,11 @@ app.post(
 
                             capacityMl:
                                 product
-                                    .capacity_ml,
+                                    .capacity_ml ||
+                                getLegacyStaticCapacityMl(
+                                    product
+                                        .product_key
+                                ),
 
                             productName:
                                 product
