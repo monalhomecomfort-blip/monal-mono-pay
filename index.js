@@ -9416,7 +9416,7 @@ app.post(
             const staticWhere = [
                 "pc.staff_only = 0",
                 "sp.id IS NULL",
-                "pc.category_slug IN ('aromadiffusers', 'refills', 'parfums')"
+                "pc.category_slug IN ('aromadiffusers', 'refills', 'parfums', 'gift-sets')"
             ];
 
             const staticValues = [];
@@ -9659,6 +9659,7 @@ app.post(
                             p.aroma_id,
 
                             p.display_name,
+                            p.short_description,
                             p.product_description,
 
                             p.volume_value,
@@ -9856,6 +9857,11 @@ app.post(
                             pc.display_name
                         ) AS display_name,
 
+                        COALESCE(
+                            o.short_description,
+                            ''
+                        ) AS short_description,
+                        
                         COALESCE(
                             o.product_description,
                             a.description,
@@ -10435,6 +10441,12 @@ app.post(
                     req.body.displayName
                 );
 
+            const shortDescription =
+                String(
+                    req.body.shortDescription ||
+                    ""
+                ).trim();
+            
             const productDescription =
                 String(
                     req.body.productDescription ||
@@ -10788,6 +10800,7 @@ app.post(
                         products_catalog_id,
                         static_card_id,
                         display_name,
+                        short_description,
                         product_description,
                         badge,
                         aroma_id,
@@ -10800,7 +10813,7 @@ app.post(
                         updated_by_staff_id
                     )
                     VALUES (
-                        ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?,
                         ?, NULL, NULL, ?, ?,
                         ?, ?
                     )
@@ -10815,6 +10828,11 @@ app.post(
                             VALUES(
                                 display_name
                             ),
+
+                        short_description =
+                            VALUES(
+                                short_description
+                            ),                            
 
                         product_description =
                             VALUES(
@@ -10870,8 +10888,8 @@ app.post(
                         sourceId,
                         staticCardId,
                         displayName,
-                        productDescription ||
-                            null,
+                        shortDescription || null,
+                        productDescription || null,
                         badge,
                         aromaId,
                         notesText ||
@@ -11149,6 +11167,7 @@ app.post(
                     product_group_key = ?,
                     aroma_id = ?,
                     display_name = ?,
+                    short_description = ?,
                     product_description = ?,
                     volume_value = ?,
                     volume_unit = ?,
@@ -11164,8 +11183,8 @@ app.post(
                     productGroupKey,
                     aromaId,
                     displayName,
-                    productDescription ||
-                        null,
+                    shortDescription || null,
+                    productDescription || null,
                     volumeValue,
                     volumeUnit,
                     volumeLabel,
@@ -12400,6 +12419,7 @@ app.get(
                         o.products_catalog_id,
                         o.static_card_id,
                         o.display_name,
+                        o.short_description,
                         o.product_description,
                         o.badge,
                         o.visibility_status,
@@ -12544,6 +12564,9 @@ app.get(
                             row.display_name ||
                             "",
 
+                        short_description:
+                            row.short_description || "",
+                        
                         product_description:
                             row.product_description ||
                             "",
@@ -13143,6 +13166,11 @@ app.post(
                     req.body.displayName
                 );
 
+            const shortDescription =
+                String(
+                    req.body.shortDescription || ""
+                ).trim();
+            
             const productDescription =
                 String(
                     req.body.productDescription || ""
@@ -13525,6 +13553,7 @@ app.post(
                         category_id,
                         aroma_id,
                         display_name,
+                        short_description,
                         product_description,
                         volume_value,
                         volume_unit,
@@ -13538,7 +13567,7 @@ app.post(
                         updated_by_staff_id
                     )
                     VALUES (
-                        ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?,
                         ?, NULL, ?, ?
                     )
@@ -13549,6 +13578,7 @@ app.post(
                         categoryId,
                         aromaId,
                         displayName,
+                        shortDescription || null,
                         productDescription || null,
                         volumeValue,
                         volumeUnit,
@@ -14052,6 +14082,7 @@ app.get(
                         p.product_key,
                         p.product_group_key,
                         p.display_name,
+                        p.short_description,
                         p.product_description,
                         p.volume_value,
                         p.volume_unit,
@@ -14287,6 +14318,9 @@ app.get(
                     display_name:
                         row.display_name,
 
+                    short_description:
+                        row.short_description || "",
+                    
                     product_description:
                         row.product_description ||
                         "",
