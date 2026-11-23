@@ -12879,10 +12879,66 @@ app.post(
                 }
             }
 
+            /* ===================== AROMA NOTES FOR PRODUCT FORM ===================== */
+
+            const aromaIds = aromas
+                .map(aroma => Number(aroma.id || 0))
+                .filter(id => id > 0);
+
+            const notesByAroma = new Map();
+
+            if (aromaIds.length) {
+                const placeholders = aromaIds
+                    .map(() => "?")
+                    .join(",");
+
+                const [aromaNoteRows] = await db.query(
+                    `
+                    SELECT
+                        an.aroma_id,
+                        n.id AS note_id,
+                        n.display_name,
+                        an.sort_order
+
+                    FROM site_catalog_aroma_notes an
+
+                    INNER JOIN site_catalog_notes n
+                        ON n.id = an.note_id
+
+                    WHERE an.aroma_id IN (${placeholders})
+                      AND n.is_active = 1
+
+                    ORDER BY
+                        an.aroma_id ASC,
+                        an.sort_order ASC,
+                        an.id ASC
+                    `,
+                    aromaIds
+                );
+
+                aromaNoteRows.forEach(row => {
+                    const aromaId = Number(row.aroma_id);
+
+                    if (!notesByAroma.has(aromaId)) {
+                        notesByAroma.set(aromaId, []);
+                    }
+
+                    notesByAroma.get(aromaId).push({
+                        id: Number(row.note_id),
+                        display_name: row.display_name
+                    });
+                });
+            }
+
+            const enrichedAromas = aromas.map(aroma => ({
+                ...aroma,
+                notes: notesByAroma.get(Number(aroma.id)) || []
+            }));
+
             return res.json({
                 ok: true,
                 category: categoryRows[0],
-                aromas,
+                aromas: enrichedAromas,
                 attributes,
                 options
             });
