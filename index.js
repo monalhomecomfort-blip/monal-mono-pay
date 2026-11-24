@@ -13217,6 +13217,28 @@ app.post(
                 req.body.aromaId || 0
             ) || null;
 
+            const rawLongevity = Number(
+                req.body.longevity || 0
+            );
+
+            const longevity =
+                Number.isInteger(rawLongevity) &&
+                rawLongevity >= 1 &&
+                rawLongevity <= 5
+                    ? rawLongevity
+                    : null;
+
+            const rawIntensity = Number(
+                req.body.intensity || 0
+            );
+
+            const intensity =
+                Number.isInteger(rawIntensity) &&
+                rawIntensity >= 1 &&
+                rawIntensity <= 5
+                    ? rawIntensity
+                    : null;
+
             const displayName =
                 normalizeStaffProductName(
                     req.body.displayName
@@ -13608,6 +13630,8 @@ app.post(
                         product_group_key,
                         category_id,
                         aroma_id,
+                        longevity,
+                        intensity,
                         display_name,
                         short_description,
                         product_description,
@@ -13623,7 +13647,7 @@ app.post(
                         updated_by_staff_id
                     )
                     VALUES (
-                        ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?,
                         ?, NULL, ?, ?
                     )
@@ -13633,6 +13657,8 @@ app.post(
                         productGroupKey,
                         categoryId,
                         aromaId,
+                        longevity,
+                        intensity,
                         displayName,
                         shortDescription || null,
                         productDescription || null,
@@ -14165,8 +14191,16 @@ app.get(
                             AS aroma_display_name,
                         a.description
                             AS aroma_description,
-                        a.longevity,
-                        a.intensity
+
+                        COALESCE(
+                            p.longevity,
+                            a.longevity
+                        ) AS longevity,
+
+                        COALESCE(
+                            p.intensity,
+                            a.intensity
+                        ) AS intensity
 
                     FROM site_catalog_products p
 
