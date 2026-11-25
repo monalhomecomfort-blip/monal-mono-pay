@@ -14412,6 +14412,9 @@ app.get(
                     product_group_key:
                         row.product_group_key,
 
+                    products_catalog_id:
+                        Number(row.products_catalog_id || 0),
+
                     display_name:
                         row.display_name,
 
