@@ -9658,6 +9658,9 @@ app.post(
                             p.category_id,
                             p.aroma_id,
 
+                            p.longevity,
+                            p.intensity,
+
                             p.display_name,
                             p.short_description,
                             p.product_description,
@@ -11166,6 +11169,8 @@ app.post(
                     product_key = ?,
                     product_group_key = ?,
                     aroma_id = ?,
+                    longevity = ?,
+                    intensity = ?,
                     display_name = ?,
                     short_description = ?,
                     product_description = ?,
@@ -11182,6 +11187,8 @@ app.post(
                     productKey,
                     productGroupKey,
                     aromaId,
+                    longevity,
+                    intensity,
                     displayName,
                     shortDescription || null,
                     productDescription || null,
