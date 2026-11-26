@@ -488,6 +488,73 @@ app.use(express.json({ limit: "10mb" }));
 // orderId → { text, certificates }
 const ORDERS = new Map();
 
+async function savePendingMonalOrder(orderId, order) {
+    await db.query(
+        `
+        INSERT INTO monal_pending_orders (
+            order_id,
+            payload_json,
+            status
+        )
+        VALUES (?, ?, 'registered')
+        ON DUPLICATE KEY UPDATE
+            payload_json = IF(
+                status = 'registered',
+                VALUES(payload_json),
+                payload_json
+            )
+        `,
+        [
+            String(orderId),
+            JSON.stringify(order)
+        ]
+    );
+}
+
+async function getPendingMonalOrder(orderId) {
+    const cachedOrder = ORDERS.get(String(orderId));
+
+    if (cachedOrder) {
+        return cachedOrder;
+    }
+
+    const [rows] = await db.query(
+        `
+        SELECT payload_json
+        FROM monal_pending_orders
+        WHERE order_id = ?
+          AND status <> 'completed'
+        LIMIT 1
+        `,
+        [String(orderId)]
+    );
+
+    if (!rows.length) {
+        return null;
+    }
+
+    const order = JSON.parse(rows[0].payload_json);
+
+    ORDERS.set(String(orderId), order);
+
+    return order;
+}
+
+async function completePendingMonalOrder(orderId) {
+    await db.query(
+        `
+        UPDATE monal_pending_orders
+        SET
+            status = 'completed',
+            completed_at = NOW()
+        WHERE order_id = ?
+        `,
+        [String(orderId)]
+    );
+
+    ORDERS.delete(String(orderId));
+}
+
 function getEffectiveDiscount(customerStatus, totalSpent) {
     const status = String(customerStatus || "general").toLowerCase();
 
@@ -20175,7 +20242,7 @@ app.post("/register-order", async (req, res) => {
             orderNote
         }));
 
-        ORDERS.set(orderId, {
+        const pendingOrder = {
             // для Telegram
             text,
 
@@ -20206,7 +20273,11 @@ app.post("/register-order", async (req, res) => {
             personalDiscount: req.body.personalDiscount || 0,
             promoDiscount: req.body.promoDiscount || 0,
             certificateAmount: req.body.certificateAmount || 0,
-        });
+        };
+
+        await savePendingMonalOrder(orderId, pendingOrder);
+
+        ORDERS.set(String(orderId), pendingOrder);
 
         res.json({ ok: true });
     } catch (err) {
@@ -20474,8 +20545,28 @@ app.post("/mono-webhook", async (req, res) => {
         }
     }
 
-    const order = ORDERS.get(orderId);
-    if (!order) return res.sendStatus(200);
+    let order;
+
+    try {
+        order = await getPendingMonalOrder(orderId);
+    } catch (err) {
+        console.error(
+            "MONO WEBHOOK ORDER RECOVERY ERROR:",
+            orderId,
+            err
+        );
+
+        return res.sendStatus(500);
+    }
+
+    if (!order) {
+        console.error(
+            "MONO WEBHOOK: ORDER NOT FOUND:",
+            orderId
+        );
+
+        return res.sendStatus(503);
+    }
 
     // ===============================
     // 🔔 СПОВІЩЕННЯ АДМІНУ (ЄДИНЕ)
@@ -21015,7 +21106,8 @@ if (order.source === "bot" && order.userId) {
     );
 }
 
-ORDERS.delete(orderId);
+await completePendingMonalOrder(orderId);
+
 res.sendStatus(200);
 });
 
@@ -21026,8 +21118,29 @@ app.post("/send-free-order", async (req, res) => {
 
     if (!orderId) return res.sendStatus(400);
 
-    const order = ORDERS.get(orderId);
-    if (!order) return res.sendStatus(404);
+    let order;
+
+    try {
+        order = await getPendingMonalOrder(orderId);
+    } catch (err) {
+        console.error(
+            "FREE ORDER RECOVERY ERROR:",
+            orderId,
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error: "Не вдалося відновити замовлення"
+        });
+    }
+
+    if (!order) {
+        return res.status(404).json({
+            ok: false,
+            error: "Замовлення не знайдено або вже завершено"
+        });
+    }
 
     const uid = Number(
         order.customerDbId ||
@@ -21134,7 +21247,8 @@ app.post("/send-free-order", async (req, res) => {
         }
     );
 
-    ORDERS.delete(orderId);
+    await completePendingMonalOrder(orderId);
+
     res.json({ ok: true });
 });
 /* ===================== BOT → ORDERS_LOG ===================== */
