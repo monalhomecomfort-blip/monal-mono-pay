@@ -11810,6 +11810,155 @@ app.post(
     }
 );
 
+/* ===================== STAFF: DELETE SITE CATALOG PRODUCT ===================== */
+
+app.post(
+    "/api/staff/site-catalog-delete-product",
+    async (req, res) => {
+        const connection =
+            await db.getConnection();
+
+        try {
+            const staffId = Number(
+                req.body.staffId || 0
+            );
+
+            const sourceId = Number(
+                req.body.sourceId || 0
+            );
+
+            const access =
+                await getStaffAdminToolsManagerOrDeny(
+                    staffId
+                );
+
+            if (!access.ok) {
+                return res
+                    .status(access.status)
+                    .json({
+                        ok: false,
+                        error: access.error
+                    });
+            }
+
+            if (!sourceId) {
+                return res.status(400).json({
+                    ok: false,
+                    error: "Некоректний товар"
+                });
+            }
+
+            const [productRows] =
+                await connection.query(
+                    `
+                    SELECT
+                        id,
+                        product_key,
+                        products_catalog_id
+                    FROM site_catalog_products
+                    WHERE id = ?
+                    LIMIT 1
+                    `,
+                    [sourceId]
+                );
+
+            if (!productRows.length) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Товар не знайдено"
+                });
+            }
+
+            const product =
+                productRows[0];
+
+            const productsCatalogId =
+                Number(
+                    product.products_catalog_id ||
+                    0
+                ) || null;
+
+            await connection.beginTransaction();
+
+            await connection.query(
+                `
+                DELETE FROM site_catalog_product_attribute_values
+                WHERE product_id = ?
+                `,
+                [sourceId]
+            );
+
+            await connection.query(
+                `
+                DELETE FROM site_catalog_product_images
+                WHERE product_id = ?
+                `,
+                [sourceId]
+            );
+
+            await connection.query(
+                `
+                DELETE FROM product_likes
+                WHERE product_key = ?
+                `,
+                [product.product_key]
+            );
+
+            await connection.query(
+                `
+                DELETE FROM site_catalog_products
+                WHERE id = ?
+                `,
+                [sourceId]
+            );
+
+            if (productsCatalogId) {
+                await connection.query(
+                    `
+                    UPDATE products_catalog
+                    SET
+                        is_active = 0,
+                        staff_only = 1
+                    WHERE id = ?
+                    `,
+                    [productsCatalogId]
+                );
+            }
+
+            await connection.commit();
+
+            return res.json({
+                ok: true
+            });
+
+        } catch (err) {
+            try {
+                await connection.rollback();
+            } catch (rollbackErr) {
+                console.error(
+                    "SITE CATALOG DELETE ROLLBACK ERROR:",
+                    rollbackErr
+                );
+            }
+
+            console.error(
+                "STAFF SITE CATALOG DELETE PRODUCT ERROR:",
+                err
+            );
+
+            return res.status(500).json({
+                ok: false,
+                error:
+                    err?.message ||
+                    "Не вдалося видалити товар"
+            });
+
+        } finally {
+            connection.release();
+        }
+    }
+);
+
 /* ===================== STAFF: SITE CATALOG SET STATUS ===================== */
 
 app.post(
@@ -13524,9 +13673,78 @@ app.post(
             const category =
                 categoryRows[0];
 
+            const isAromaticCategory =
+                [
+                    "aromadiffusers",
+                    "refills",
+                    "parfums"
+                ].includes(
+                    String(
+                        category.category_slug ||
+                        ""
+                    )
+                );
+
+            if (
+                createNewAroma &&
+                !isAromaticCategory
+            ) {
+                return res.status(400).json({
+                    ok: false,
+                    error:
+                        "Новий аромат можна створити тільки для ароматичної продукції"
+                });
+            }
+
             let aroma = null;
 
-            if (aromaId) {
+            if (createNewAroma) {
+                const aromaSlug =
+                    slugifyStaffProductPart(
+                        displayName
+                    )
+                        .replace(/_/g, "-");
+
+                if (!aromaSlug) {
+                    return res.status(400).json({
+                        ok: false,
+                        error:
+                            "Не вдалося сформувати назву нового аромату"
+                    });
+                }
+
+                const [existingAromaRows] =
+                    await connection.query(
+                        `
+                        SELECT id
+                        FROM site_catalog_aromas
+                        WHERE aroma_slug = ?
+                           OR LOWER(TRIM(display_name)) =
+                              LOWER(TRIM(?))
+                        LIMIT 1
+                        `,
+                        [
+                            aromaSlug,
+                            displayName
+                        ]
+                    );
+
+                if (existingAromaRows.length) {
+                    return res.status(400).json({
+                        ok: false,
+                        error:
+                            "Такий аромат уже існує. Обери його зі списку."
+                    });
+                }
+
+                aroma = {
+                    id: null,
+                    aroma_slug: aromaSlug,
+                    display_name: displayName,
+                    isNew: true
+                };
+
+            } else if (aromaId) {
                 const [aromaRows] =
                     await connection.query(
                         `
@@ -13723,6 +13941,100 @@ app.post(
             }
 
             await connection.beginTransaction();
+
+            if (aroma?.isNew) {
+                const [aromaInsertResult] =
+                    await connection.query(
+                        `
+                        INSERT INTO site_catalog_aromas
+                        (
+                            aroma_slug,
+                            display_name,
+                            description,
+                            longevity,
+                            intensity,
+                            sort_order,
+                            is_active
+                        )
+                        VALUES (?, ?, ?, ?, ?, 0, 1)
+                        `,
+                        [
+                            aroma.aroma_slug,
+                            displayName,
+                            productDescription || null,
+                            longevity,
+                            intensity
+                        ]
+                    );
+
+                aromaId = Number(
+                    aromaInsertResult.insertId || 0
+                );
+
+                if (!aromaId) {
+                    throw new Error(
+                        "Не вдалося створити аромат"
+                    );
+                }
+
+                for (
+                    let noteIndex = 0;
+                    noteIndex < aromaNotes.length;
+                    noteIndex++
+                ) {
+                    const note =
+                        aromaNotes[noteIndex];
+
+                    const [noteResult] =
+                        await connection.query(
+                            `
+                            INSERT INTO site_catalog_notes
+                            (
+                                note_slug,
+                                display_name,
+                                is_active
+                            )
+                            VALUES (?, ?, 1)
+                            ON DUPLICATE KEY UPDATE
+                                display_name =
+                                    VALUES(display_name),
+                                is_active = 1,
+                                id = LAST_INSERT_ID(id)
+                            `,
+                            [
+                                note.noteSlug,
+                                note.displayName
+                            ]
+                        );
+
+                    const noteId = Number(
+                        noteResult.insertId || 0
+                    );
+
+                    if (!noteId) {
+                        throw new Error(
+                            `Не вдалося зберегти ноту «${note.displayName}»`
+                        );
+                    }
+
+                    await connection.query(
+                        `
+                        INSERT INTO site_catalog_aroma_notes
+                        (
+                            aroma_id,
+                            note_id,
+                            sort_order
+                        )
+                        VALUES (?, ?, ?)
+                        `,
+                        [
+                            aromaId,
+                            noteId,
+                            noteIndex
+                        ]
+                    );
+                }
+            }
 
             const [insertResult] =
                 await connection.query(
