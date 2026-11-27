@@ -13050,7 +13050,24 @@ app.post(
             )
                 .trim()
                 .toLowerCase();
+            
+            const categorySlug = String(
+                req.body.categorySlug || ""
+            ).trim();
 
+            const displayName = String(
+                req.body.displayName || ""
+            ).trim();
+
+            const volumeValue = Number(
+                req.body.volumeValue || 0
+            );
+
+            const imageIndex = Math.max(
+                0,
+                Number(req.body.imageIndex || 0)
+            );
+            
             const dataBase64 = String(
                 req.body.dataBase64 || ""
             ).trim();
@@ -13132,33 +13149,45 @@ app.post(
                 });
             }
 
-            const originalBaseName =
-                fileName.replace(
-                    /\.[^.]+$/,
-                    ""
-                );
+            const categoryPart =
+                slugifyStaffProductPart(
+                    categorySlug
+                )
+                    .replace(/_/g, "-") ||
+                "product";
+
+            const productPart =
+                slugifyStaffProductPart(
+                    displayName
+                )
+                    .replace(/_/g, "-") ||
+                "item";
+
+            const volumePart =
+                Number.isFinite(volumeValue) &&
+                volumeValue > 0
+                    ? `${Number(volumeValue)}ml`
+                    : "";
+
+            const imagePart =
+                String(
+                    imageIndex + 1
+                ).padStart(2, "0");
 
             const safeBaseName =
-                originalBaseName
-                    .normalize("NFKD")
-                    .toLowerCase()
-                    .replace(
-                        /[^a-z0-9]+/g,
-                        "-"
-                    )
-                    .replace(
-                        /^-+|-+$/g,
-                        ""
-                    )
-                    .slice(0, 60)
-                || "product";
+                [
+                    categoryPart,
+                    productPart,
+                    volumePart,
+                    imagePart
+                ]
+                    .filter(Boolean)
+                    .join("-")
+                    .slice(0, 110);
 
-            const uniquePart = [
-                Date.now(),
-                Math.random()
-                    .toString(36)
-                    .slice(2, 8)
-            ].join("-");
+            const uniquePart =
+                Date.now()
+                    .toString(36);
 
             const repositoryPath =
                 `images/catalog/${safeBaseName}-${uniquePart}.${extension}`;
