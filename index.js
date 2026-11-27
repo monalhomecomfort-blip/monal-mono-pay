@@ -13523,9 +13523,39 @@ app.post(
                 req.body.categoryId || 0
             );
 
-            const aromaId = Number(
+            let aromaId = Number(
                 req.body.aromaId || 0
             ) || null;
+
+            const createNewAroma =
+                Boolean(
+                    req.body.createNewAroma
+                );
+
+            const aromaNotesText = String(
+                req.body.aromaNotesText || ""
+            ).trim();
+
+            const aromaNotes = [
+                ...new Map(
+                    aromaNotesText
+                        .split(
+                            /\s*[|,;\n\r]+\s*/u
+                        )
+                        .map(note =>
+                            String(note || "").trim()
+                        )
+                        .filter(Boolean)
+                        .map(note => [
+                            slugifyStaffProductPart(note),
+                            note
+                        ])
+                        .filter(([slug]) => Boolean(slug))
+                ).entries()
+            ].map(([noteSlug, noteDisplayName]) => ({
+                noteSlug,
+                displayName: noteDisplayName
+            }));
 
             const rawLongevity = Number(
                 req.body.longevity || 0
