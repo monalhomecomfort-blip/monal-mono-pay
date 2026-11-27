@@ -80,6 +80,47 @@ async function appendOrderToOrdersLog({
     });    
 }
 
+async function appendOrderToOrdersLogOnce(
+    orderData
+) {
+    const orderId = String(
+        orderData?.orderId || ""
+    ).trim();
+
+    if (!orderId) {
+        throw new Error(
+            "orderId required for ORDERS_LOG"
+        );
+    }
+
+    const existingResponse =
+        await sheets.spreadsheets.values.get({
+            spreadsheetId:
+                SHEET_ID,
+
+            range:
+                `${ORDERS_SHEET_NAME}!A:A`
+        });
+
+    const alreadyExists =
+        (existingResponse.data.values || [])
+            .some(row =>
+                String(
+                    row?.[0] || ""
+                ).trim() === orderId
+            );
+
+    if (alreadyExists) {
+        return false;
+    }
+
+    await appendOrderToOrdersLog(
+        orderData
+    );
+
+    return true;
+}
+
 /* ===================== ПОГАШЕННЯ СЕРТИФІКАТУ ===================== */
 /* ❗ НЕ ВИКЛИКАЄТЬСЯ ТУТ — БУДЕ ВИКОРИСТАНО ПРИ РЕАЛЬНОМУ ПОГАШЕННІ */
 
@@ -512,30 +553,47 @@ async function savePendingMonalOrder(orderId, order) {
 }
 
 async function getPendingMonalOrder(orderId) {
-    const cachedOrder = ORDERS.get(String(orderId));
-
-    if (cachedOrder) {
-        return cachedOrder;
-    }
-
     const [rows] = await db.query(
         `
-        SELECT payload_json
+        SELECT
+            payload_json,
+            status
         FROM monal_pending_orders
         WHERE order_id = ?
-          AND status <> 'completed'
         LIMIT 1
         `,
         [String(orderId)]
     );
 
     if (!rows.length) {
+        ORDERS.delete(
+            String(orderId)
+        );
+
         return null;
     }
 
-    const order = JSON.parse(rows[0].payload_json);
+    if (
+        String(
+            rows[0].status || ""
+        ) === "completed"
+    ) {
+        ORDERS.delete(
+            String(orderId)
+        );
 
-    ORDERS.set(String(orderId), order);
+        return null;
+    }
+
+    const order =
+        JSON.parse(
+            rows[0].payload_json
+        );
+
+    ORDERS.set(
+        String(orderId),
+        order
+    );
 
     return order;
 }
@@ -20523,6 +20581,7 @@ app.post("/register-order", async (req, res) => {
             buyerPhone,
             delivery,
             itemsText,
+            items,
             totalAmount,
             orderAmount,
             paidAmount,
@@ -20604,6 +20663,12 @@ app.post("/register-order", async (req, res) => {
             buyerPhone: buyerPhone || "",
             delivery: delivery || "",
             itemsText: itemsText || "",
+
+            items:
+                Array.isArray(items)
+                    ? items
+                    : [],
+
             totalAmount: totalAmount || "",
             orderAmount: orderAmount || totalAmount || "",
             paidAmount: paidAmount || "",
@@ -21278,137 +21343,273 @@ const orderReportTotalAmount = Number(
         : order.totalAmount || 0
 );
     
-await appendOrderToOrdersLog({
-    orderId: orderId,
-    source: order.source || "site",
-    totalAmount: orderReportTotalAmount,
-    paidAmount: order.paidAmount || "",
-    dueAmount: order.dueAmount || "",
-    paymentType: order.paymentLabel || "",
-    buyerName: order.buyerName || "",
-    buyerPhone: order.buyerPhone || "",
-    delivery: order.delivery || "",
-    itemsText: order.itemsText || "",
-    orderNote: order.orderNote || "",
-});
-
-// ===============================
-// 💾 ЗАПИС У MYSQL (ДУБЛЬ ЗАМОВЛЕННЯ)
-// ===============================
+let ordersLogSaved = true;
 
 try {
-    await db.query(
-        `INSERT INTO orders (
-            order_id,
-            user_id,
-            user_email,
-            source,
-            customer_source,
-            buyer_name,
-            buyer_phone,
-            delivery,
-            items_text,
-            total_amount,
-            paid_amount,
-            due_amount,
-            payment_type,
-            order_note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-            orderId,
-            order.customerDbId || (order.source === "site" ? order.userId : null),
-            order.userEmail || null,
+    await appendOrderToOrdersLogOnce({
+        orderId: orderId,
+        source:
             order.source || "site",
-            order.source || "site",
-            order.buyerName || "",
-            order.buyerPhone || "",
-            order.delivery || "",
-            order.itemsText || "",
+        totalAmount:
             orderReportTotalAmount,
-            Number(order.paidAmount || 0),
-            Number(order.dueAmount || 0),
+        paidAmount:
+            order.paidAmount || "",
+        dueAmount:
+            order.dueAmount || "",
+        paymentType:
             order.paymentLabel || "",
-            order.orderNote || ""
-        ]
-    );
+        buyerName:
+            order.buyerName || "",
+        buyerPhone:
+            order.buyerPhone || "",
+        delivery:
+            order.delivery || "",
+        itemsText:
+            order.itemsText || "",
+        orderNote:
+            order.orderNote || "",
+    });
+
 } catch (err) {
-    console.error("MYSQL ORDER INSERT ERROR:", err);
+    ordersLogSaved = false;
+
+    console.error(
+        "ORDERS_LOG SYNC ERROR:",
+        orderId,
+        err
+    );
 }
 
+
 // ===============================
-// 👑 ОНОВЛЕННЯ НАКОПИЧЕННЯ КЛІЄНТА
+// 💾 MYSQL + ЛОЯЛЬНІСТЬ
 // ===============================
 
-const uid = Number(
-    order.customerDbId ||
-    (order.source === "site" ? order.userId : 0) ||
-    0
-);
+const orderConnection =
+    await db.getConnection();
 
-if (uid > 0) {
+try {
+    await orderConnection
+        .beginTransaction();
 
-    const loyaltyAmount =
-        Number(order.paidAmount || 0) +
-        Number(order.dueAmount || 0);
+    const [existingOrderRows] =
+        await orderConnection.query(
+            `
+            SELECT id
+            FROM orders
+            WHERE order_id = ?
+            LIMIT 1
+            FOR UPDATE
+            `,
+            [orderId]
+        );
 
-    try {
-
-        // оновлюємо суму покупок
-        await db.query(
-            "UPDATE customers SET total_spent = total_spent + ? WHERE id = ?",
+    if (!existingOrderRows.length) {
+        await orderConnection.query(
+            `
+            INSERT INTO orders (
+                order_id,
+                user_id,
+                user_email,
+                source,
+                customer_source,
+                buyer_name,
+                buyer_phone,
+                delivery,
+                items_text,
+                total_amount,
+                paid_amount,
+                due_amount,
+                payment_type,
+                order_note
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?
+            )
+            `,
             [
-                loyaltyAmount,
-                uid
+                orderId,
+
+                order.customerDbId ||
+                    (
+                        order.source === "site"
+                            ? order.userId
+                            : null
+                    ),
+
+                order.userEmail || null,
+
+                order.source || "site",
+                order.source || "site",
+
+                order.buyerName || "",
+                order.buyerPhone || "",
+                order.delivery || "",
+                order.itemsText || "",
+
+                orderReportTotalAmount,
+
+                Number(
+                    order.paidAmount || 0
+                ),
+
+                Number(
+                    order.dueAmount || 0
+                ),
+
+                order.paymentLabel || "",
+                order.orderNote || ""
             ]
         );
 
-        // беремо нову суму
-        const [rows] = await db.query(
-            "SELECT total_spent, customer_status FROM customers WHERE id = ?",
-            [uid]
+        const uid = Number(
+            order.customerDbId ||
+            (
+                order.source === "site"
+                    ? order.userId
+                    : 0
+            ) ||
+            0
         );
 
-        if (rows.length) {
+        if (uid > 0) {
+            const loyaltyAmount =
+                Number(
+                    order.paidAmount || 0
+                ) +
+                Number(
+                    order.dueAmount || 0
+                );
 
-            const newDiscount = getEffectiveDiscount(
-                rows[0].customer_status,
-                rows[0].total_spent
+            await orderConnection.query(
+                `
+                UPDATE customers
+                SET total_spent =
+                    COALESCE(
+                        total_spent,
+                        0
+                    ) + ?
+                WHERE id = ?
+                `,
+                [
+                    loyaltyAmount,
+                    uid
+                ]
             );
 
-            await db.query(
-                "UPDATE customers SET discount = ? WHERE id = ?",
-                [newDiscount, uid]
-            );
+            const [customerRows] =
+                await orderConnection.query(
+                    `
+                    SELECT
+                        total_spent,
+                        customer_status
+                    FROM customers
+                    WHERE id = ?
+                    LIMIT 1
+                    `,
+                    [uid]
+                );
 
+            if (customerRows.length) {
+                const newDiscount =
+                    getEffectiveDiscount(
+                        customerRows[0]
+                            .customer_status,
+
+                        customerRows[0]
+                            .total_spent
+                    );
+
+                await orderConnection.query(
+                    `
+                    UPDATE customers
+                    SET discount = ?
+                    WHERE id = ?
+                    `,
+                    [
+                        newDiscount,
+                        uid
+                    ]
+                );
+
+                await orderConnection.query(
+                    `
+                    UPDATE customers
+                    SET welcome_discount_used = 1
+                    WHERE id = ?
+                      AND LOWER(
+                            COALESCE(
+                                customer_status,
+                                'general'
+                            )
+                          ) = 'general'
+                      AND welcome_discount_used = 0
+                    `,
+                    [uid]
+                );
+            }
         }
-
-    } catch (err) {
-        
-        console.error("MYSQL LOYALTY UPDATE ERROR:", err);
-
     }
-    
-    await markWelcomeDiscountUsed(uid);
 
+    await orderConnection.commit();
+
+} catch (err) {
+    await orderConnection.rollback();
+
+    console.error(
+        "MYSQL ORDER / LOYALTY ERROR:",
+        orderId,
+        err
+    );
+
+    return res.sendStatus(500);
+
+} finally {
+    orderConnection.release();
+}
+
+if (!ordersLogSaved) {
+    return res.sendStatus(500);
 }
 // ===============================
 // 📩 ВІДПРАВКА АДМІНУ
 // ===============================
 
-await fetch(
-    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
-    {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            chat_id: process.env.CHAT_ID,
-            text: finalText,
-            parse_mode: "Markdown",
-        }),
-    }
-);
+const adminTelegramResponse =
+    await fetch(
+        `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
+        {
+            method: "POST",
+
+            headers: {
+                "Content-Type":
+                    "application/json",
+            },
+
+            body:
+                JSON.stringify({
+                    chat_id:
+                        process.env.CHAT_ID,
+
+                    text:
+                        finalText,
+
+                    parse_mode:
+                        "Markdown",
+                }),
+        }
+    );
+
+if (!adminTelegramResponse.ok) {
+    console.error(
+        "ORDER TELEGRAM ERROR:",
+        orderId,
+        await adminTelegramResponse.text()
+    );
+
+    return res.sendStatus(500);
+}
 
 // 📩 СПОВІЩЕННЯ ПОКУПЦЮ В TELEGRAM-БОТІ
 
@@ -21519,74 +21720,187 @@ app.post("/send-free-order", async (req, res) => {
     );
 
     // 🧾 ЗАПИС У ORDERS_LOG — ОПЛАТА СЕРТИФІКАТОМ 100%
-    await appendOrderToOrdersLog({
-        orderId: orderId,
-        source: order.source || "site",
-        totalAmount: orderReportTotalAmount,
-        paidAmount: orderReportTotalAmount,
-        dueAmount: 0,
-        paymentType: "Оплачено сертифікатом 100%",
-        buyerName: order.buyerName || "",
-        buyerPhone: order.buyerPhone || "",
-        delivery: order.delivery || "",
-        itemsText: order.itemsText || "",
-        orderNote: order.orderNote || "",
-    });
 
-    // 💾 ЗАПИС У MYSQL
+    let freeOrderLogSaved = true;
+
     try {
-        await db.query(
-            `INSERT INTO orders (
-                order_id,
-                user_id,
-                user_email,
-                source,
-                customer_source,
-                buyer_name,
-                buyer_phone,
-                delivery,
-                items_text,
-                total_amount,
-                paid_amount,
-                due_amount,
-                payment_type,
-                order_note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
+        await appendOrderToOrdersLogOnce({
+            orderId:
                 orderId,
-                order.customerDbId || (order.source === "site" ? order.userId : null),
-                order.userEmail || null,
+
+            source:
                 order.source || "site",
-                order.source || "site",
-                order.buyerName || "",
-                order.buyerPhone || "",
-                order.delivery || "",
-                order.itemsText || "",
+
+            totalAmount:
                 orderReportTotalAmount,
+
+            paidAmount:
                 orderReportTotalAmount,
+
+            dueAmount:
                 0,
+
+            paymentType:
                 "Оплачено сертифікатом 100%",
-                order.orderNote || ""
-            ]
-        );
+
+            buyerName:
+                order.buyerName || "",
+
+            buyerPhone:
+                order.buyerPhone || "",
+
+            delivery:
+                order.delivery || "",
+
+            itemsText:
+                order.itemsText || "",
+
+            orderNote:
+                order.orderNote || "",
+        });
+
     } catch (err) {
-        console.error("MYSQL FREE ORDER INSERT ERROR:", err);
+        freeOrderLogSaved = false;
+
+        console.error(
+            "FREE ORDER ORDERS_LOG ERROR:",
+            orderId,
+            err
+        );
     }
 
-    await fetch(
-        `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                chat_id: process.env.CHAT_ID,
-                text: finalText,
-                parse_mode: "Markdown",
-            }),
+
+    // 💾 ЗАПИС У MYSQL
+
+    try {
+        const [existingOrderRows] =
+            await db.query(
+                `
+                SELECT id
+                FROM orders
+                WHERE order_id = ?
+                LIMIT 1
+                `,
+                [orderId]
+            );
+
+        if (!existingOrderRows.length) {
+            await db.query(
+                `
+                INSERT INTO orders (
+                    order_id,
+                    user_id,
+                    user_email,
+                    source,
+                    customer_source,
+                    buyer_name,
+                    buyer_phone,
+                    delivery,
+                    items_text,
+                    total_amount,
+                    paid_amount,
+                    due_amount,
+                    payment_type,
+                    order_note
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?
+                )
+                `,
+                [
+                    orderId,
+
+                    order.customerDbId ||
+                        (
+                            order.source === "site"
+                                ? order.userId
+                                : null
+                        ),
+
+                    order.userEmail || null,
+
+                    order.source || "site",
+                    order.source || "site",
+
+                    order.buyerName || "",
+                    order.buyerPhone || "",
+                    order.delivery || "",
+                    order.itemsText || "",
+
+                    orderReportTotalAmount,
+                    orderReportTotalAmount,
+
+                    0,
+
+                    "Оплачено сертифікатом 100%",
+
+                    order.orderNote || ""
+                ]
+            );
         }
-    );
+
+    } catch (err) {
+        console.error(
+            "MYSQL FREE ORDER INSERT ERROR:",
+            orderId,
+            err
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error:
+                "Не вдалося записати замовлення"
+        });
+    }
+
+    if (!freeOrderLogSaved) {
+        return res.status(500).json({
+            ok: false,
+            error:
+                "Не вдалося записати замовлення в ORDERS_LOG"
+        });
+    }
+
+
+    const adminTelegramResponse =
+        await fetch(
+            `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type":
+                        "application/json",
+                },
+
+                body:
+                    JSON.stringify({
+                        chat_id:
+                            process.env.CHAT_ID,
+
+                        text:
+                            finalText,
+
+                        parse_mode:
+                            "Markdown",
+                    }),
+            }
+        );
+
+    if (!adminTelegramResponse.ok) {
+        console.error(
+            "FREE ORDER TELEGRAM ERROR:",
+            orderId,
+            await adminTelegramResponse.text()
+        );
+
+        return res.status(500).json({
+            ok: false,
+            error:
+                "Не вдалося надіслати повідомлення адміну"
+        });
+    }
 
     await completePendingMonalOrder(orderId);
 
