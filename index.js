@@ -13572,7 +13572,7 @@ app.post(
                 ...new Map(
                     aromaNotesText
                         .split(
-                            /\s*[|,;\n\r]+\s*/u
+                            /\s*[|,;•·∙\/\n\r–—]+\s*/u
                         )
                         .map(note =>
                             String(note || "").trim()
