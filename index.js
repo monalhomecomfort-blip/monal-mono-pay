@@ -12452,32 +12452,26 @@ app.post(
                 if (
                     duplicateRows.length
                 ) {
-                    throw new Error(
-                        "У products_catalog вже є товар з таким product_key"
-                    );
-                }
+                    productsCatalogId =
+                        Number(
+                            duplicateRows[0]
+                                .id || 0
+                        );
 
-                const [insertResult] =
                     await connection.query(
                         `
-                        INSERT INTO products_catalog
-                        (
-                            product_key,
-                            product_name,
-                            display_name,
-                            product_label,
-                            category_slug,
-                            capacity_ml,
-                            price,
-                            cost_price,
-                            realization_price,
-                            is_active,
-                            staff_only
-                        )
-                        VALUES (
-                            ?, ?, ?, ?, ?, ?,
-                            ?, NULL, NULL, 1, 0
-                        )
+                        UPDATE products_catalog
+                        SET
+                            product_key = ?,
+                            product_name = ?,
+                            display_name = ?,
+                            product_label = ?,
+                            category_slug = ?,
+                            capacity_ml = ?,
+                            price = ?,
+                            is_active = 1,
+                            staff_only = 0
+                        WHERE id = ?
                         `,
                         [
                             product.product_key,
@@ -12488,16 +12482,54 @@ app.post(
                             product
                                 .category_slug,
                             capacityMl,
-                            product.price
+                            product.price,
+                            productsCatalogId
                         ]
                     );
 
-                productsCatalogId =
-                    Number(
-                        insertResult
-                            .insertId ||
-                        0
-                    );
+                } else {
+                    const [insertResult] =
+                        await connection.query(
+                            `
+                            INSERT INTO products_catalog
+                            (
+                                product_key,
+                                product_name,
+                                display_name,
+                                product_label,
+                                category_slug,
+                                capacity_ml,
+                                price,
+                                cost_price,
+                                realization_price,
+                                is_active,
+                                staff_only
+                            )
+                            VALUES (
+                                ?, ?, ?, ?, ?, ?,
+                                ?, NULL, NULL, 1, 0
+                            )
+                            `,
+                            [
+                                product.product_key,
+                                product.display_name,
+                                operationalDisplayName,
+                                product
+                                    .category_display_name,
+                                product
+                                    .category_slug,
+                                capacityMl,
+                                product.price
+                            ]
+                        );
+
+                    productsCatalogId =
+                        Number(
+                            insertResult
+                                .insertId ||
+                            0
+                        );
+                }
 
                 const stockManaged =
                     isStaffCatalogProductStockManaged({
